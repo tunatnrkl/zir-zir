@@ -230,11 +230,12 @@ begin
   return query select * from public.audit_log order by id desc limit 300;
 end $$;
 
-create or replace function public.zz_admin_add_player(p_token text, p_name text) returns bigint
+-- Oyuncu eklemek herkese açık
+drop function if exists public.zz_admin_add_player(text, text);
+create or replace function public.zz_add_player(p_name text) returns bigint
 language plpgsql security definer set search_path = public as $$
 declare n text; new_id bigint;
 begin
-  perform public.zz_require_admin(p_token);
   n := public.zz_clean_name(p_name);
   if exists (select 1 from public.players where name_key = lower(n)) then
     raise exception 'Bu isimde bir oyuncu zaten var.';
@@ -343,14 +344,14 @@ revoke execute on function
 revoke execute on function
   public.zz_version(), public.zz_add_match(bigint, bigint, text, int, int), public.zz_admin_login(text),
   public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
-  public.zz_admin_add_player(text, text), public.zz_admin_rename_player(text, bigint, text),
+  public.zz_add_player(text), public.zz_admin_rename_player(text, bigint, text),
   public.zz_admin_delete_player(text, bigint, int), public.zz_admin_adjust(text, bigint, int, text, int),
   public.zz_admin_edit_match(text, bigint, bigint, bigint, text, int, int), public.zz_admin_delete_match(text, bigint)
   from public;
 grant execute on function
   public.zz_version(), public.zz_add_match(bigint, bigint, text, int, int), public.zz_admin_login(text),
   public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
-  public.zz_admin_add_player(text, text), public.zz_admin_rename_player(text, bigint, text),
+  public.zz_add_player(text), public.zz_admin_rename_player(text, bigint, text),
   public.zz_admin_delete_player(text, bigint, int), public.zz_admin_adjust(text, bigint, int, text, int),
   public.zz_admin_edit_match(text, bigint, bigint, bigint, text, int, int), public.zz_admin_delete_match(text, bigint)
   to anon, authenticated;

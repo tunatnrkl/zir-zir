@@ -2,113 +2,54 @@
   'use strict';
 
   const Elo = window.ZirElo;
+  const Store = window.ZirStore;
   const $ = (s, el = document) => el.querySelector(s);
-  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
   const S = {
-    state: { version: 0, players: [], matches: [], average: 0, target: 1600, start: 1000 },
+    version: -1,
+    players: [], // sıralı (ELO'ya göre)
+    matches: [], // en yeni en üstte
+    average: 0,
     byId: new Map(),
     token: null,
-    isAdmin: false,
-    view: 'siralama',
-    result: null,
-    matchLimit: 30,
-    freshMatchId: null,
+    modal: null, // 'match' | 'settings'
+    flow: { a: null, b: null },
   };
 
   // ---------- yardımcılar ----------
   const esc = (v) =>
     String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-  const upper = (s) => String(s).toLocaleUpperCase('tr-TR');
-  const initials = (name) =>
-    upper(
-      String(name)
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((w) => [...w][0])
-        .join('')
-    );
   const signed = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : '±0');
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
+  const byName = (a, b) => a.name.localeCompare(b.name, 'tr');
   const tsFmt = new Intl.DateTimeFormat('tr-TR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-  const timeFmt = new Intl.DateTimeFormat('tr-TR', { hour: '2-digit', minute: '2-digit' });
-  function ago(t) {
-    const diff = Date.now() - t;
-    if (diff < 60e3) return 'az önce';
-    if (diff < 3600e3) return `${Math.floor(diff / 60e3)} dk önce`;
-    const d = new Date(t);
-    const today = new Date();
-    if (d.toDateString() === today.toDateString()) return `bugün ${timeFmt.format(d)}`;
-    const y = new Date(today);
-    y.setDate(today.getDate() - 1);
-    if (d.toDateString() === y.toDateString()) return `dün ${timeFmt.format(d)}`;
-    return tsFmt.format(d);
-  }
-
-  function tier(rating) {
-    if (rating >= 1800) return { cls: 'elite', name: 'ZIR Elit' };
-    if (rating >= 1500) return { cls: 'gold', name: 'Altın' };
-    if (rating >= 1200) return { cls: 'silver', name: 'Gümüş' };
-    return { cls: 'bronze', name: 'Bronz' };
-  }
+  const when = (t) => tsFmt.format(new Date(t));
 
   // ---------- ZIR ZIR mizahı (dozunda) ----------
   const LOSS_QUIPS = ['Konsolunda sorun olabilir mi?', 'Biraz daha antrenman lazım.'];
   function playerQuip(p) {
-    const ps = S.state.players;
-    if (p.rating >= 1900) return 'Bu lig sana dar geliyor.';
-    if (ps.length >= 3 && p.games > 0 && p.rank === ps.length) return 'Küme düşme hattı seni bekliyor.';
-    if (p.games > 0 && (p.rating < 950 || p.rating < S.state.average - 250)) return 'ZIR ZIR AĞLAMA';
+    if (p.rating >= 1900) return { text: 'Bu lig sana dar geliyor.', good: true };
+    if (S.players.length >= 3 && p.games > 0 && p.rank === S.players.length) return { text: 'Küme düşme hattı seni bekliyor.' };
+    if (p.games > 0 && (p.rating < 950 || p.rating < S.average - 250)) return { text: 'ZIR ZIR AĞLAMA' };
     return null;
   }
-  const isDomination = (m) => m.score_a != null && m.score_b != null && Math.abs(m.score_a - m.score_b) >= 3;
 
-  // ---------- Veri ----------
-  const Store = window.ZirStore;
-
-  /** Yönetici işlemi: oturum düşmüşse paneli kapatır. */
-  async function admin(fn) {
-    try {
-      return await fn(S.token);
-    } catch (e) {
-      if (e.auth) setAdmin(null);
-      throw e;
-    }
-  }
-
-  function setLive(on) {
-    const demo = Store.mode === 'local';
-    $('#live').classList.toggle('off', !on || demo);
-    $('#live-text').textContent = demo ? 'DEMO' : on ? 'CANLI' : 'BAĞLANIYOR';
-  }
-
-  // Ham veriden (oyuncular, maçlar, düzeltmeler) sıralamayı hesaplar.
+  // ---------- veri ----------
   let loading = null;
-  function loadState(force = false) {
-    if (loading) return force ? loading.then(() => loadState(true)) : loading;
+  function load(force = false) {
+    if (loading) return force ? loading.then(() => load(true)) : loading;
     loading = (async () => {
       try {
         const v = await Store.version();
-        if (!force && S.loaded && v === S.state.version) return setLive(true);
+        if (!force && v === S.version) return;
         const raw = await Store.load();
         const r = Elo.replay(raw.players, raw.matches, raw.adjustments);
-        S.state = {
-          version: v,
-          target: Elo.TARGET_AVERAGE,
-          start: Elo.START_RATING,
-          average: r.average,
-          players: r.players,
-          matches: r.matches,
-        };
-        S.loaded = true;
+        Object.assign(S, { version: v, players: r.players, matches: r.matches, average: r.average });
         S.byId = new Map(r.players.map((p) => [p.id, p]));
-        render();
-        setLive(true);
+        renderTable();
+        if (S.modal === 'settings') refreshSettings();
       } catch (e) {
         console.warn(e);
-        setLive(false);
       }
     })().finally(() => {
       loading = null;
@@ -116,304 +57,389 @@
     return loading;
   }
 
-  // ---------- canlı güncelleme: birkaç saniyede bir sürüm kontrolü ----------
-  function connectLive() {
-    Store.subscribe(() => loadState());
-    setInterval(() => {
-      if (!document.hidden) loadState();
-    }, Store.mode === 'remote' ? 4000 : 15000);
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) loadState();
-    });
-  }
-
-  // ---------- render ----------
-  function render() {
-    renderKpis();
-    renderPodium();
-    renderTable();
-    renderRecent();
-    renderMatchForm();
-    renderAllMatches();
-    renderAdmin();
-    $('#foot-target').textContent = S.state.target;
-  }
-
-  function renderKpis() {
-    const ps = S.state.players;
-    let record = null;
-    for (const p of ps) if (!record || p.peak > record.peak) record = p;
-    const total = S.state.matches.length;
-    $('#kpis').innerHTML = `
-      <div class="kpi"><div class="kpi-label">Rekor ELO</div><div class="kpi-value neon">${record ? record.peak : '–'}</div><div class="kpi-sub">${record ? esc(record.name) : 'henüz yok'}</div></div>
-      <div class="kpi"><div class="kpi-label">Ortalama</div><div class="kpi-value">${ps.length ? S.state.average : '–'}</div><div class="kpi-sub">hedef ~${S.state.target}</div></div>
-      <div class="kpi"><div class="kpi-label">Oynanan Maç</div><div class="kpi-value">${total}</div><div class="kpi-sub">${ps.length} oyuncu</div></div>`;
-  }
-
-  function futCard(p, extraClass = '') {
-    if (!p) {
-      return `<div class="fut empty-card ${extraClass}"><div class="fut-top"><div><div class="fut-rating">–</div></div></div><div class="fut-avatar">?</div><div class="fut-name">Boş</div></div>`;
+  async function admin(fn) {
+    try {
+      return await fn(S.token);
+    } catch (e) {
+      if (e.auth) setToken(null);
+      throw e;
     }
-    const t = tier(p.rating);
-    const quip = playerQuip(p);
-    return `
-      <div class="fut ${t.cls} ${extraClass}" data-player="${p.id}" role="button" tabindex="0" aria-label="${esc(p.name)} profili">
-        <div class="fut-top">
-          <div><div class="fut-rating">${p.rating}</div><div class="fut-rank">#${p.rank}</div></div>
-          <div class="fut-tier">${t.name}<br>ELO</div>
-        </div>
-        <div class="fut-avatar">${esc(initials(p.name))}</div>
-        <div class="fut-name">${esc(p.name)}</div>
-        <div class="fut-stats">
-          <div><b>${p.wins}</b><span>GAL</span></div>
-          <div><b>${p.draws}</b><span>BER</span></div>
-          <div><b>${p.losses}</b><span>MAĞ</span></div>
-          <div><b>${p.games ? Math.round(p.winRate) : '–'}</b><span>%</span></div>
-        </div>
-        ${quip ? `<div class="fut-quip">${esc(quip)}</div>` : ''}
-      </div>`;
   }
 
-  function renderPodium() {
-    const ps = S.state.players;
-    const el = $('#podium');
-    if (!ps.length) {
-      el.innerHTML = '';
-      return;
-    }
-    el.innerHTML = [0, 1, 2]
-      .map((i) => `<div class="podium-slot p${i + 1}">${futCard(ps[i])}<div class="podium-base">${i + 1}</div></div>`)
-      .join('');
+  function setToken(t) {
+    S.token = t;
+    try {
+      if (t) localStorage.setItem('zirzir_admin', t);
+      else localStorage.removeItem('zirzir_admin');
+    } catch {}
+    if (S.modal === 'settings') renderSettings();
   }
 
-  function formHtml(form) {
-    const map = { W: 'G', D: 'B', L: 'M' };
-    return `<span class="form">${form.map((r) => `<i class="${r}">${map[r]}</i>`).join('')}</span>`;
-  }
-
+  // ---------- ana ekran: sıralama ----------
   function renderTable() {
-    const ps = S.state.players;
-    $('#empty-players').hidden = ps.length > 0;
-    $('#table-note').textContent = ps.length ? `${ps.length} oyuncu` : '';
-    $('#leaderboard tbody').innerHTML = ps
+    $('#empty').hidden = S.players.length > 0;
+    $('#leaderboard').hidden = S.players.length === 0;
+    $('#leaderboard tbody').innerHTML = S.players
       .map((p, i) => {
-        const quip = playerQuip(p);
-        const last = ps.length >= 3 && p.games > 0 && p.rank === ps.length;
-        const cls = [i < 3 ? `top${i + 1}` : '', last ? 'relegation' : ''].join(' ');
-        let tag = '';
-        if (quip === 'Bu lig sana dar geliyor.') tag = '<span class="tag tag-neon">Lig dar</span>';
-        else if (last) tag = '<span class="tag tag-red">Küme hattı</span>';
-        else if (quip) tag = '<span class="tag tag-red">Zır zır</span>';
-        return `
-        <tr class="${cls}" data-player="${p.id}" style="animation-delay:${Math.min(i, 12) * 25}ms">
-          <td class="c"><span class="rank-num">${p.rank}</span></td>
-          <td><div class="pname"><span class="mini-av">${esc(initials(p.name))}</span><span class="pname-text">${esc(p.name)}</span>${tag}</div></td>
+        const q = playerQuip(p);
+        return `<tr class="${i < 3 ? `top${i + 1}` : ''}" data-player="${p.id}">
+          <td class="c"><span class="rank">${p.rank}</span></td>
+          <td><span class="name">${esc(p.name)}</span>${q ? `<span class="quip ${q.good ? 'good' : ''}">${esc(q.text)}</span>` : ''}</td>
           <td class="r"><span class="elo">${p.rating}</span></td>
-          <td class="c hide-sm">${p.games}</td>
           <td class="c w">${p.wins}</td>
-          <td class="c d">${p.draws}</td>
           <td class="c l">${p.losses}</td>
-          <td class="r">${p.games ? p.winRate : '–'}</td>
-          <td class="r hide-sm">${p.peak}</td>
-          <td class="c hide-md">${p.form.length ? formHtml(p.form) : '<span class="muted">–</span>'}</td>
+          <td class="r">${p.games ? Math.round(p.winRate) : '–'}</td>
         </tr>`;
       })
       .join('');
   }
 
-  function matchHtml(m, { admin = false } = {}) {
-    const aWin = m.result === 'A';
-    const bWin = m.result === 'B';
-    const hasScore = m.score_a != null;
-    const score = hasScore ? `${m.score_a} – ${m.score_b}` : m.result === 'D' ? 'B' : aWin ? 'G – M' : 'M – G';
-    const dCls = (d) => (d > 0 ? 'up' : d < 0 ? 'down' : 'zero');
-    const tag = isDomination(m) ? '<span class="tag tag-neon m-tag">Dominasyon</span>' : '';
-    return `
-      <li class="match ${S.freshMatchId === m.id ? 'fresh' : ''}" data-match="${m.id}">
-        ${tag}
-        <div class="m-side">
-          <span class="m-name ${aWin ? 'winner' : bWin ? 'loser' : ''}" data-player="${m.player_a}">${esc(m.name_a)}</span>
-          <span class="m-delta ${dCls(m.delta_a)}">${signed(m.delta_a)} · ${m.before_a + m.delta_a}</span>
-        </div>
-        <div class="m-center">
-          <span class="m-score ${m.result === 'D' ? 'draw' : ''}">${score}</span>
-          <div class="m-time">${ago(m.played_at)}</div>
-        </div>
-        <div class="m-side right">
-          <span class="m-name ${bWin ? 'winner' : aWin ? 'loser' : ''}" data-player="${m.player_b}">${esc(m.name_b)}</span>
-          <span class="m-delta ${dCls(m.delta_b)}">${m.before_b + m.delta_b} · ${signed(m.delta_b)}</span>
-        </div>
-        ${
-          admin
-            ? `<div class="m-admin"><button class="btn btn-ghost btn-sm" data-edit-match="${m.id}">Düzelt</button><button class="btn btn-danger btn-sm" data-del-match="${m.id}">Sil</button></div>`
-            : ''
-        }
-      </li>`;
-  }
+  $('#leaderboard').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-player]');
+    if (tr) openMatch(Number(tr.dataset.player));
+  });
 
-  function renderRecent() {
-    const ms = S.state.matches.slice(0, 6);
-    $('#recent').innerHTML = ms.length
-      ? ms.map((m) => matchHtml(m)).join('')
-      : '<li class="empty">Henüz maç yok. İlk maçı sen gir!</li>';
+  // ---------- pencere ----------
+  const modal = $('#modal');
+  function openModal(kind, html) {
+    S.modal = kind;
+    $('#modal-body').innerHTML = html;
+    if (!modal.open) modal.showModal();
   }
+  modal.addEventListener('close', () => {
+    S.modal = null;
+  });
+  $('#modal-close').addEventListener('click', () => modal.close());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.close();
+  });
 
-  function renderAllMatches() {
-    const sel = $('#filter-player');
-    const cur = sel.value;
-    sel.innerHTML =
-      '<option value="">Bütün oyuncular</option>' +
-      S.state.players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-    if (cur && S.byId.has(Number(cur))) sel.value = cur;
-    const fid = Number(sel.value) || null;
-    const list = fid ? S.state.matches.filter((m) => m.player_a === fid || m.player_b === fid) : S.state.matches;
-    $('#all-matches').innerHTML = list.length
-      ? list
-          .slice(0, S.matchLimit)
-          .map((m) => matchHtml(m, { admin: S.isAdmin }))
-          .join('')
-      : '<li class="empty">Maç bulunamadı.</li>';
-    $('#more-matches').hidden = list.length <= S.matchLimit;
+  // ---------- maç ekleme: iki oyuncu → kazanan ----------
+  function openMatch(firstId = null) {
+    S.flow = { a: firstId, b: null };
+    renderFlow();
   }
+  $('#open-match').addEventListener('click', () => openMatch());
 
-  // ---------- Maç ekle ----------
-  function playerOptions(selected, placeholder) {
-    return (
-      `<option value="">${placeholder}</option>` +
-      [...S.state.players]
-        .sort((a, b) => a.name.localeCompare(b.name, 'tr'))
-        .map((p) => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)} (${p.rating})</option>`)
-        .join('')
+  function renderFlow() {
+    const { a, b } = S.flow;
+    const pa = S.byId.get(a);
+    const pb = S.byId.get(b);
+
+    if (S.players.length < 2) {
+      openModal('match', `<h2>Maç Ekle</h2><p class="muted">Maç eklemek için en az 2 oyuncu lazım. Sağ üstteki ⚙ ayarlardan oyuncu ekleyebilirsin.</p>`);
+      return;
+    }
+
+    if (pa && pb) {
+      const ra = Elo.computeMatch(pa, pb, 'A', S.average);
+      const rb = Elo.computeMatch(pa, pb, 'B', S.average);
+      openModal(
+        'match',
+        `<button class="back" data-back>← geri</button>
+        <h2>Kim kazandı?</h2>
+        <div class="winners">
+          <button class="winner" data-win="A"><b>${esc(pa.name)}</b><span>${signed(ra.deltaA)} ELO</span></button>
+          <button class="winner" data-win="B"><b>${esc(pb.name)}</b><span>${signed(rb.deltaB)} ELO</span></button>
+        </div>
+        <p class="msg" id="m-match"></p>`
+      );
+      return;
+    }
+
+    const list = [...S.players].sort(byName).filter((p) => !pa || p.id !== a);
+    openModal(
+      'match',
+      `<h2>${pa ? `${esc(pa.name)} kimle oynadı?` : 'Kim oynadı?'}</h2>
+      ${pa ? '' : '<p class="muted small">İki oyuncuyu seç.</p>'}
+      <div class="chips">${list
+        .map((p) => `<button class="chip" data-pick="${p.id}"><b>${esc(p.name)}</b><span>${p.rating}</span></button>`)
+        .join('')}</div>`
     );
   }
 
-  function renderMatchForm() {
-    const a = $('#sel-a');
-    const b = $('#sel-b');
-    const va = Number(a.value) || null;
-    const vb = Number(b.value) || null;
-    a.innerHTML = playerOptions(va, 'Oyuncu seç');
-    b.innerHTML = playerOptions(vb, 'Oyuncu seç');
-    updatePreview();
-  }
-
-  function scoreVal(id) {
-    const v = $(id).value.trim();
-    if (v === '') return null;
-    const n = Number(v);
-    return Number.isInteger(n) && n >= 0 && n <= 99 ? n : NaN;
-  }
-
-  function setResult(r) {
-    S.result = r;
-    $$('.res-btn').forEach((btn) => {
-      btn.classList.toggle('selected', btn.dataset.result === r);
-      btn.setAttribute('aria-checked', String(btn.dataset.result === r));
-    });
-  }
-
-  function updatePreview() {
-    const pa = S.byId.get(Number($('#sel-a').value));
-    const pb = S.byId.get(Number($('#sel-b').value));
-    $('#elo-a').textContent = pa ? `${pa.rating} ELO · ${tier(pa.rating).name}` : '';
-    $('#elo-b').textContent = pb ? `${pb.rating} ELO · ${tier(pb.rating).name}` : '';
-    $('#res-a').textContent = pa ? pa.name : 'Ev Sahibi';
-    $('#res-b').textContent = pb ? pb.name : 'Deplasman';
-
-    // Skor girildiyse sonucu otomatik seç
-    const sa = scoreVal('#score-a');
-    const sb = scoreVal('#score-b');
-    if (sa != null && sb != null && !Number.isNaN(sa) && !Number.isNaN(sb)) setResult(sa > sb ? 'A' : sa < sb ? 'B' : 'D');
-
-    for (const r of ['A', 'D', 'B']) $(`#pv-${r}`).textContent = '';
-    if (pa && pb && pa.id !== pb.id) {
-      const ps = S.state.players;
-      const avg = ps.reduce((s, p) => s + p.rating, 0) / ps.length;
-      for (const r of ['A', 'D', 'B']) {
-        const c = Elo.computeMatch(pa, pb, r, avg);
-        $(`#pv-${r}`).textContent = `${signed(c.deltaA)} / ${signed(c.deltaB)}`;
-      }
-    }
-  }
-
-  $('#sel-a').addEventListener('change', updatePreview);
-  $('#sel-b').addEventListener('change', updatePreview);
-  $$('.res-btn').forEach((btn) => btn.addEventListener('click', () => setResult(btn.dataset.result)));
-  $$('.stepper').forEach((st) => {
-    const input = $('input', st);
-    st.addEventListener('click', (e) => {
-      const step = Number(e.target.dataset.step);
-      if (!step) return;
-      const cur = input.value === '' ? 0 : Number(input.value) || 0;
-      input.value = String(Math.max(0, Math.min(99, cur + step)));
-      // Skor girilmeye başlandıysa diğer tarafı 0'dan başlat
-      for (const other of ['#score-a', '#score-b']) if ($(other).value === '') $(other).value = '0';
-      updatePreview();
-    });
-    input.addEventListener('input', updatePreview);
-  });
-
-  $('#match-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = $('#match-msg');
-    msg.className = 'form-msg';
-    msg.textContent = '';
-    const playerA = Number($('#sel-a').value);
-    const playerB = Number($('#sel-b').value);
-    const sa = scoreVal('#score-a');
-    const sb = scoreVal('#score-b');
-    const fail = (t) => {
-      msg.className = 'form-msg err';
-      msg.textContent = t;
-    };
-    if (!playerA || !playerB) return fail('İki oyuncuyu da seç.');
-    if (playerA === playerB) return fail('Kendinle maç yapamazsın. Bu kadar da yalnız kalma.');
-    if (Number.isNaN(sa) || Number.isNaN(sb)) return fail('Skor 0-99 arası olmalı.');
-    if ((sa == null) !== (sb == null)) return fail('Skoru iki taraf için de gir ya da boş bırak.');
-    if (!S.result) return fail('Kazananı seç.');
-
-    const btn = $('#save-match');
-    btn.disabled = true;
+  async function saveMatch(result) {
+    const { a, b } = S.flow;
+    const buttons = document.querySelectorAll('[data-win]');
+    buttons.forEach((x) => (x.disabled = true));
     try {
-      const id = await Store.addMatch({ playerA, playerB, result: S.result, scoreA: sa, scoreB: sb });
-      S.freshMatchId = id;
-      $('#score-a').value = '';
-      $('#score-b').value = '';
-      setResult(null);
-      msg.className = 'form-msg ok';
-      msg.textContent = 'Kaydedildi! Puanlar güncellendi.';
-      await loadState(true);
-      const match = S.state.matches.find((m) => m.id === id);
-      if (match) matchToast(match);
+      const id = await Store.addMatch({ playerA: a, playerB: b, result, scoreA: null, scoreB: null });
+      await load(true);
+      modal.close();
+      const m = S.matches.find((x) => x.id === id);
+      if (m) matchToast(m);
     } catch (err) {
-      fail(err.message);
-    } finally {
-      btn.disabled = false;
+      setMsg('#m-match', err.message);
+      buttons.forEach((x) => (x.disabled = false));
     }
-  });
+  }
 
   function matchToast(m) {
-    if (m.result === 'D') {
-      toast({
-        title: 'Berabere',
-        lines: [`${m.name_a} ${signed(m.delta_a)} · ${m.name_b} ${signed(m.delta_b)}`],
-        quip: 'Puanlar paylaşıldı.',
-      });
-      return;
-    }
     const aWon = m.result === 'A';
     const winner = aWon ? m.name_a : m.name_b;
     const loser = aWon ? m.name_b : m.name_a;
     const dw = aWon ? m.delta_a : m.delta_b;
     const dl = aWon ? m.delta_b : m.delta_a;
+    const after = (aWon ? m.before_a : m.before_b) + dw;
+    const w = S.byId.get(aWon ? m.player_a : m.player_b);
+    const streak = w && w.form.length >= 3 && w.form.slice(-3).every((r) => r === 'W'); // üst üste 3 galibiyet
     toast({
       title: `${winner} kazandı!`,
       lines: [`${winner} ${signed(dw)} ELO`, `${loser} ${signed(dl)} ELO — ${pick(LOSS_QUIPS)}`],
-      quip: isDomination(m) ? 'Bu nasıl bir dominasyon!' : null,
+      quip: after >= 1900 ? 'Bu lig sana dar geliyor.' : streak ? 'Bu nasıl bir dominasyon!' : null,
     });
   }
 
-  // ---------- Bildirim ----------
+  // ---------- ayarlar ----------
+  $('#open-settings').addEventListener('click', () => renderSettings());
+
+  function renderSettings() {
+    const isAdmin = !!S.token;
+    openModal(
+      'settings',
+      `<h2>Ayarlar</h2>
+
+      <h3>Oyuncu Ekle</h3>
+      <form class="row" id="f-player" autocomplete="off">
+        <input type="text" id="new-player" maxlength="20" placeholder="Oyuncu adı" required>
+        <button class="btn btn-primary" type="submit">Ekle</button>
+      </form>
+      <p class="msg" id="m-player"></p>
+
+      <h3>Maç Geçmişi</h3>
+      <select id="hist-filter" aria-label="Oyuncuya göre filtrele"></select>
+      <ul class="list" id="history"></ul>
+
+      <h3>Yönetici</h3>
+      ${
+        isAdmin
+          ? `<form class="stack" id="f-adjust" autocomplete="off">
+              <select id="adj-player" required></select>
+              <div class="quick">
+                <button type="button" class="neg" data-amt="-100">−100</button>
+                <button type="button" class="neg" data-amt="-50">−50</button>
+                <button type="button" class="pos" data-amt="50">+50</button>
+                <button type="button" class="pos" data-amt="100">+100</button>
+              </div>
+              <div class="row">
+                <input type="number" id="adj-amount" step="1" placeholder="ELO (ör. 50 / -100)" required>
+                <input type="text" id="adj-reason" maxlength="120" placeholder="Sebep (isteğe bağlı)">
+              </div>
+              <button class="btn btn-primary" type="submit">ELO Uygula</button>
+              <p class="msg" id="m-adjust"></p>
+            </form>
+            <h3>Oyuncular</h3>
+            <ul class="list" id="admin-players"></ul>
+            <h3>Yönetici Kayıtları</h3>
+            <ul class="list" id="admin-log"></ul>
+            <p><button class="btn btn-ghost btn-sm" id="logout">Yönetici çıkışı</button></p>`
+          : `<form class="row" id="f-login" autocomplete="off">
+              <input type="password" id="admin-code" placeholder="Yönetici kodu" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+              <button class="btn btn-primary" type="submit">Giriş</button>
+            </form>
+            <p class="msg" id="m-login"></p>`
+      }`
+    );
+    refreshSettings();
+    if (isAdmin) loadLog();
+  }
+
+  /** Ayarlar açıkken listeleri günceller (yazılan alanlara dokunmaz). */
+  function refreshSettings() {
+    const sorted = [...S.players].sort(byName);
+    const opts = (cur, ph) =>
+      `<option value="">${ph}</option>` +
+      sorted.map((p) => `<option value="${p.id}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)} (${p.rating})</option>`).join('');
+
+    const f = $('#hist-filter');
+    if (f) {
+      const cur = Number(f.value) || null;
+      f.innerHTML = opts(cur, 'Bütün maçlar');
+      const list = cur ? S.matches.filter((m) => m.player_a === cur || m.player_b === cur) : S.matches;
+      $('#history').innerHTML = list.length
+        ? list
+            .slice(0, 200)
+            .map((m) => {
+              let text;
+              if (m.result === 'D') {
+                text = `${esc(m.name_a)} – ${esc(m.name_b)} <span class="muted">berabere</span>`;
+              } else {
+                const [w, l, dw, dl] =
+                  m.result === 'A' ? [m.name_a, m.name_b, m.delta_a, m.delta_b] : [m.name_b, m.name_a, m.delta_b, m.delta_a];
+                text = `<b>${esc(w)}</b> <span class="d-up">${signed(dw)}</span> · ${esc(l)} <span class="d-down">${signed(dl)}</span>`;
+              }
+              const actions = S.token
+                ? `<span class="actions"><button class="btn btn-ghost btn-sm" data-flip="${m.id}" title="Kazananı değiştir">⇄</button><button class="btn btn-danger btn-sm" data-del-match="${m.id}">Sil</button></span>`
+                : '';
+              return `<li><span class="grow">${text}</span><span class="when">${when(m.played_at)}</span>${actions}</li>`;
+            })
+            .join('')
+        : '<li class="empty">Henüz maç yok.</li>';
+    }
+
+    const adj = $('#adj-player');
+    if (adj) adj.innerHTML = opts(Number(adj.value) || null, 'Oyuncu seç');
+
+    const ap = $('#admin-players');
+    if (ap) {
+      ap.innerHTML = S.players.length
+        ? S.players
+            .map(
+              (p) => `<li><span class="grow"><b>${esc(p.name)}</b> <span class="muted">${p.rating}</span></span>
+                <span class="actions"><button class="btn btn-ghost btn-sm" data-rename="${p.id}">Ad</button>
+                <button class="btn btn-danger btn-sm" data-del-player="${p.id}">Sil</button></span></li>`
+            )
+            .join('')
+        : '<li class="empty">Henüz oyuncu yok.</li>';
+    }
+  }
+
+  const ACTION_TEXT = {
+    admin_login: () => 'Yönetici girişi',
+    player_add: (d) => `Oyuncu eklendi: ${d.name}`,
+    player_rename: (d) => `Ad değişti: ${d.from} → ${d.to}`,
+    player_delete: (d) => `Oyuncu silindi: ${d.name} (${d.rating ?? '?'} ELO, ${d.matchesRemoved} maç)`,
+    elo_adjust: (d) =>
+      `Manuel ELO: ${d.name} ${signed(d.amount)}${d.before != null ? ` (${d.before} → ${d.before + d.amount})` : ''}${d.reason ? ` · “${d.reason}”` : ''}`,
+    match_edit: (d) => `Maç #${d.matchId} düzeltildi`,
+    match_delete: (d) => `Maç silindi${d.match ? `: ${d.match.name_a} – ${d.match.name_b}` : ''}`,
+  };
+
+  async function loadLog() {
+    try {
+      const rows = await admin((t) => Store.log(t));
+      const el = $('#admin-log');
+      if (!el) return;
+      el.innerHTML = rows.length
+        ? rows
+            .map(
+              (r) =>
+                `<li><span class="grow">${esc((ACTION_TEXT[r.action] || (() => r.action))(r.details || {}))}</span><span class="when">${when(r.created_at)}</span></li>`
+            )
+            .join('')
+        : '<li class="empty">Kayıt yok.</li>';
+    } catch (e) {
+      console.warn(e);
+    }
+  }
+
+  function setMsg(id, text, ok = false) {
+    const el = $(id);
+    if (!el) return;
+    el.className = `msg ${ok ? 'ok' : 'err'}`;
+    el.textContent = text;
+  }
+
+  // ---------- pencere içi tıklamalar ----------
+  modal.addEventListener('click', async (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+
+    if (t.dataset.pick) {
+      const id = Number(t.dataset.pick);
+      if (S.flow.a == null) {
+        S.flow.a = id; // ilk oyuncu seçildi, ikinciyi bekle
+        t.classList.add('selected');
+        return;
+      }
+      if (S.flow.a === id) {
+        S.flow.a = null; // seçimi geri al
+        t.classList.remove('selected');
+        return;
+      }
+      S.flow.b = id;
+      return renderFlow();
+    }
+    if (t.hasAttribute('data-back')) {
+      S.flow.b = null;
+      return renderFlow();
+    }
+    if (t.dataset.win) return saveMatch(t.dataset.win);
+    if (t.dataset.amt) {
+      $('#adj-amount').value = t.dataset.amt;
+      return;
+    }
+    if (t.id === 'logout') {
+      try {
+        await Store.logout(S.token);
+      } catch {}
+      return setToken(null);
+    }
+
+    try {
+      if (t.dataset.flip) {
+        const m = S.matches.find((x) => x.id === Number(t.dataset.flip));
+        if (!m || m.result === 'D') return;
+        const other = m.result === 'A' ? m.name_b : m.name_a;
+        if (!confirm(`Bu maçın kazananı ${other} olarak değiştirilsin mi?`)) return;
+        await admin((tk) =>
+          Store.editMatch(tk, m.id, {
+            playerA: m.player_a,
+            playerB: m.player_b,
+            result: m.result === 'A' ? 'B' : 'A',
+            scoreA: null,
+            scoreB: null,
+          })
+        );
+      } else if (t.dataset.delMatch) {
+        const m = S.matches.find((x) => x.id === Number(t.dataset.delMatch));
+        if (!m || !confirm(`${m.name_a} – ${m.name_b} maçı silinsin mi? Puanlar yeniden hesaplanır.`)) return;
+        await admin((tk) => Store.deleteMatch(tk, m.id));
+      } else if (t.dataset.rename) {
+        const p = S.byId.get(Number(t.dataset.rename));
+        const name = p && prompt('Yeni ad:', p.name);
+        if (!name) return;
+        await admin((tk) => Store.renamePlayer(tk, p.id, name));
+      } else if (t.dataset.delPlayer) {
+        const p = S.byId.get(Number(t.dataset.delPlayer));
+        if (!p || !confirm(`${p.name} silinsin mi?\nOyuncunun ${p.games} maçı da silinir. Geri alınamaz.`)) return;
+        await admin((tk) => Store.deletePlayer(tk, p.id, p.rating));
+      } else return;
+      await load(true);
+      loadLog();
+    } catch (err) {
+      toast({ title: 'İşlem yapılamadı', lines: [err.message], error: true });
+    }
+  });
+
+  modal.addEventListener('change', (e) => {
+    if (e.target.id === 'hist-filter') refreshSettings();
+  });
+
+  // ---------- pencere içi formlar ----------
+  modal.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const msgId = { 'f-player': '#m-player', 'f-login': '#m-login', 'f-adjust': '#m-adjust' }[f.id];
+    try {
+      if (f.id === 'f-player') {
+        const name = $('#new-player').value;
+        await Store.addPlayer(name);
+        $('#new-player').value = '';
+        setMsg(msgId, `${name.trim()} lige katıldı. 1000 ELO ile başlıyor.`, true);
+        await load(true);
+        if (S.token) loadLog();
+      } else if (f.id === 'f-login') {
+        setToken(await Store.login($('#admin-code').value));
+      } else if (f.id === 'f-adjust') {
+        const playerId = Number($('#adj-player').value);
+        const amount = Number($('#adj-amount').value);
+        const p = S.byId.get(playerId);
+        if (!p) throw new Error('Oyuncu seç.');
+        if (!Number.isInteger(amount) || amount === 0) throw new Error('Geçerli bir miktar gir (ör. 50 veya -100).');
+        await admin((t) => Store.adjust(t, playerId, amount, $('#adj-reason').value, p.rating));
+        $('#adj-amount').value = '';
+        $('#adj-reason').value = '';
+        await load(true);
+        setMsg(msgId, `${p.name}: ${signed(amount)} ELO → ${S.byId.get(playerId)?.rating ?? '?'}`, true);
+        loadLog();
+      }
+    } catch (err) {
+      setMsg(msgId, err.message);
+    }
+  });
+
+  // ---------- bildirim ----------
   function toast({ title, lines = [], quip = null, error = false }) {
     const el = document.createElement('div');
     el.className = `toast${error ? ' err' : ''}`;
@@ -427,342 +453,24 @@
       setTimeout(() => el.remove(), 300);
     };
     el.addEventListener('click', close);
-    setTimeout(close, 5500);
+    setTimeout(close, 5000);
   }
 
-  // ---------- Profil ----------
-  const modal = $('#modal');
-  function openModal(html) {
-    $('#modal-body').innerHTML = html;
-    if (!modal.open) modal.showModal();
-  }
-  $('#modal-close').addEventListener('click', () => modal.close());
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.close();
-  });
-
-  function chartSvg(history) {
-    if (history.length < 2) return '';
-    const W = 600, H = 120, P = 10;
-    const vals = history.map((h) => h.rating);
-    let min = Math.min(...vals), max = Math.max(...vals);
-    if (max - min < 40) { min -= 20; max += 20; }
-    const x = (i) => P + (i * (W - 2 * P)) / (history.length - 1);
-    const y = (v) => H - P - ((v - min) * (H - 2 * P)) / (max - min);
-    const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-    const area = `${P},${H - P} ${pts} ${W - P},${H - P}`;
-    return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="ELO grafiği">
-      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#00ff87" stop-opacity=".35"/><stop offset="1" stop-color="#00ff87" stop-opacity="0"/></linearGradient></defs>
-      <polygon points="${area}" fill="url(#g)"/>
-      <polyline points="${pts}" fill="none" stroke="#00ff87" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
-    </svg>`;
-  }
-
-  function openProfile(id) {
-    const p = S.byId.get(id);
-    if (!p) return;
-    const ms = S.state.matches.filter((m) => m.player_a === id || m.player_b === id);
-    const hasGoals = p.goalsFor + p.goalsAgainst > 0;
-    openModal(`
-      <div class="profile">
-        <div>${futCard(p)}</div>
-        <div>
-          <p class="eyebrow">Oyuncu Profili · #${p.rank}</p>
-          <h1 class="title sm">${esc(p.name)}</h1>
-          <div class="pstats">
-            <div class="pstat"><b class="neon">${p.rating}</b><span>ELO</span></div>
-            <div class="pstat"><b>${p.peak}</b><span>Rekor</span></div>
-            <div class="pstat"><b>${p.games ? p.winRate + '%' : '–'}</b><span>Galibiyet</span></div>
-            <div class="pstat"><b><span class="w">${p.wins}</span>-<span class="d">${p.draws}</span>-<span class="l">${p.losses}</span></b><span>G-B-M</span></div>
-            <div class="pstat"><b>${p.games}</b><span>Maç</span></div>
-            <div class="pstat"><b>${hasGoals ? `${p.goalsFor}:${p.goalsAgainst}` : '–'}</b><span>Gol</span></div>
-          </div>
-          ${chartSvg(p.history)}
-        </div>
-      </div>
-      <div class="profile-matches">
-        <h3>Maç Geçmişi</h3>
-        <ul class="match-list compact">${ms.length ? ms.map((m) => matchHtml(m)).join('') : '<li class="empty">Henüz maç yok.</li>'}</ul>
-      </div>`);
-  }
-
-  // Genel tıklama: oyuncu kartları/satırları, maç düzenleme
-  document.addEventListener('click', (e) => {
-    const editBtn = e.target.closest('[data-edit-match]');
-    if (editBtn) return openEditMatch(Number(editBtn.dataset.editMatch));
-    const delBtn = e.target.closest('[data-del-match]');
-    if (delBtn) return deleteMatch(Number(delBtn.dataset.delMatch));
-    const pl = e.target.closest('[data-player]');
-    if (pl && !e.target.closest('.admin-players')) openProfile(Number(pl.dataset.player));
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.matches('.fut[data-player]')) openProfile(Number(e.target.dataset.player));
-  });
-
-  // ---------- Navigasyon ----------
-  const VIEWS = ['siralama', 'mac-ekle', 'maclar', 'ayarlar'];
-  function show(view) {
-    if (!VIEWS.includes(view)) view = 'siralama';
-    S.view = view;
-    for (const v of VIEWS) $(`#view-${v}`).hidden = v !== view;
-    $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.nav === view));
-    if (modal.open) modal.close();
-    window.scrollTo({ top: 0 });
-  }
-  window.addEventListener('hashchange', () => show(location.hash.slice(1)));
-  $('#filter-player').addEventListener('change', () => {
-    S.matchLimit = 30;
-    renderAllMatches();
-  });
-  $('#more-matches').addEventListener('click', () => {
-    S.matchLimit += 30;
-    renderAllMatches();
-  });
-
-  // ---------- Yönetici ----------
-  function setAdmin(token) {
-    S.token = token;
-    S.isAdmin = !!token;
-    try {
-      if (token) localStorage.setItem('zirzir_admin', token);
-      else localStorage.removeItem('zirzir_admin');
-    } catch {}
-    $('#login-panel').hidden = S.isAdmin;
-    $('#admin-panel').hidden = !S.isAdmin;
-    renderAllMatches();
-    renderAdmin();
-    if (S.isAdmin) loadLog();
-  }
-
-  $('#login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = $('#login-msg');
-    msg.className = 'form-msg';
-    msg.textContent = '';
-    try {
-      const token = await Store.login($('#admin-code').value);
-      $('#admin-code').value = '';
-      setAdmin(token);
-      toast({ title: 'Yönetici paneli açıldı', lines: ['Güç sende. Adil kullan.'] });
-    } catch (err) {
-      msg.className = 'form-msg err';
-      msg.textContent = err.message;
-    }
-  });
-
-  $('#logout').addEventListener('click', async () => {
-    try {
-      await Store.logout(S.token);
-    } catch {}
-    setAdmin(null);
-  });
-
-  function renderAdmin() {
-    if (!S.isAdmin) return;
-    const sel = $('#adj-player');
-    const cur = Number(sel.value) || null;
-    sel.innerHTML = playerOptions(cur, 'Oyuncu seç');
-    $('#admin-players').innerHTML = S.state.players.length
-      ? S.state.players
-          .map(
-            (p) => `<li><span class="ap-name">${esc(p.name)}</span><span class="ap-elo">${p.rating}</span>
-              <button class="btn btn-ghost btn-sm" data-rename="${p.id}">Ad</button>
-              <button class="btn btn-danger btn-sm" data-del-player="${p.id}">Sil</button></li>`
-          )
-          .join('')
-      : '<li class="empty">Henüz oyuncu yok.</li>';
-  }
-
-  const ACTION_TEXT = {
-    admin_login: () => 'Yönetici girişi yapıldı',
-    player_add: (d) => `Oyuncu eklendi: ${d.name}`,
-    player_rename: (d) => `Oyuncu adı değişti: ${d.from} → ${d.to}`,
-    player_delete: (d) => `Oyuncu silindi: ${d.name} (${d.rating ?? '?'} ELO, ${d.matchesRemoved} maç kaldırıldı)`,
-    elo_adjust: (d) => `Manuel ELO: ${d.name} ${signed(d.amount)} (${d.before ?? '?'} → ${(d.before ?? 0) + d.amount})${d.reason ? ` · “${d.reason}”` : ''}`,
-    match_edit: (d) => {
-      const b = d.before || {};
-      const nm = (id) => S.byId.get(id)?.name || `#${id}`;
-      const fmt = (x, a, bb) => (x.score_a != null || x.scoreA != null ? `${x.score_a ?? x.scoreA}-${x.score_b ?? x.scoreB}` : { A: `${a} kazandı`, B: `${bb} kazandı`, D: 'berabere' }[x.result]);
-      return `Maç #${d.matchId} düzeltildi: ${b.name_a ?? '?'} vs ${b.name_b ?? '?'} (${fmt(b, b.name_a, b.name_b)}) → ${nm(d.after.playerA)} vs ${nm(d.after.playerB)} (${fmt(d.after, nm(d.after.playerA), nm(d.after.playerB))})`;
-    },
-    match_delete: (d) => `Maç #${d.matchId} silindi${d.match ? `: ${d.match.name_a} vs ${d.match.name_b}` : ''}`,
-  };
-
-  async function loadLog() {
-    try {
-      const audit = await admin((t) => Store.log(t));
-      $('#admin-log').innerHTML = audit.length
-        ? audit
-            .map((r) => {
-              const cls = r.action === 'elo_adjust' ? (r.details.amount > 0 ? 'adj-up' : 'adj-down') : '';
-              const text = (ACTION_TEXT[r.action] || (() => r.action))(r.details);
-              return `<li class="${cls}"><time>${tsFmt.format(new Date(r.created_at))}</time><span>${esc(text)}</span></li>`;
-            })
-            .join('')
-        : '<li class="empty">Kayıt yok.</li>';
-    } catch (e) {
-      console.warn(e);
-    }
-  }
-
-  $$('.quick button').forEach((b) =>
-    b.addEventListener('click', () => {
-      $('#adj-amount').value = b.dataset.amt;
-    })
-  );
-
-  $('#adjust-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = $('#adj-msg');
-    msg.className = 'form-msg';
-    const playerId = Number($('#adj-player').value);
-    const amount = Number($('#adj-amount').value);
-    const p = S.byId.get(playerId);
-    if (!p) {
-      msg.className = 'form-msg err';
-      msg.textContent = 'Oyuncu seç.';
-      return;
-    }
-    try {
-      if (!Number.isInteger(amount) || amount === 0) throw new Error('Geçerli bir miktar gir (ör. 50 veya -100).');
-      await admin((t) => Store.adjust(t, playerId, amount, $('#adj-reason').value, p.rating));
-      $('#adj-amount').value = '';
-      $('#adj-reason').value = '';
-      await loadState(true);
-      msg.className = 'form-msg ok';
-      msg.textContent = `${p.name}: ${signed(amount)} ELO uygulandı → ${S.byId.get(playerId)?.rating ?? '?'}`;
-      loadLog();
-    } catch (err) {
-      msg.className = 'form-msg err';
-      msg.textContent = err.message;
-    }
-  });
-
-  $('#player-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = $('#player-msg');
-    const name = $('#new-player').value;
-    try {
-      await admin((t) => Store.addPlayer(t, name));
-      msg.className = 'form-msg ok';
-      msg.textContent = `${name.trim()} lige katıldı. 1000 ELO ile başlıyor.`;
-      $('#new-player').value = '';
-      await loadState(true);
-      loadLog();
-    } catch (err) {
-      msg.className = 'form-msg err';
-      msg.textContent = err.message;
-    }
-  });
-
-  $('#admin-players').addEventListener('click', async (e) => {
-    const ren = e.target.closest('[data-rename]');
-    const del = e.target.closest('[data-del-player]');
-    const msg = $('#player-msg');
-    try {
-      if (ren) {
-        const p = S.byId.get(Number(ren.dataset.rename));
-        const name = prompt('Yeni ad:', p?.name || '');
-        if (!name) return;
-        await admin((t) => Store.renamePlayer(t, p.id, name));
-      } else if (del) {
-        const p = S.byId.get(Number(del.dataset.delPlayer));
-        if (!p) return;
-        if (!confirm(`${p.name} silinsin mi?\n\nOyuncunun ${p.games} maçı da silinir ve bütün sıralama yeniden hesaplanır. Bu işlem geri alınamaz.`)) return;
-        await admin((t) => Store.deletePlayer(t, p.id, p.rating));
-        msg.className = 'form-msg ok';
-        msg.textContent = `${p.name} silindi.`;
-      } else return;
-      await loadState(true);
-      loadLog();
-    } catch (err) {
-      msg.className = 'form-msg err';
-      msg.textContent = err.message;
-    }
-  });
-
-  function openEditMatch(id) {
-    const m = S.state.matches.find((x) => x.id === id);
-    if (!m || !S.isAdmin) return;
-    openModal(`
-      <p class="eyebrow">Yönetici</p>
-      <h1 class="title sm">Maç #${m.id} <span class="neon">Düzelt</span></h1>
-      <form id="edit-form" autocomplete="off">
-        <div class="edit-grid">
-          <label>Ev sahibi<select id="ed-a">${playerOptions(m.player_a, 'Seç')}</select></label>
-          <label>Deplasman<select id="ed-b">${playerOptions(m.player_b, 'Seç')}</select></label>
-          <label>Ev sahibi skor<input id="ed-sa" inputmode="numeric" value="${m.score_a ?? ''}" placeholder="–"></label>
-          <label>Deplasman skor<input id="ed-sb" inputmode="numeric" value="${m.score_b ?? ''}" placeholder="–"></label>
-          <label>Sonuç<select id="ed-r">
-            <option value="A" ${m.result === 'A' ? 'selected' : ''}>Ev sahibi kazandı</option>
-            <option value="D" ${m.result === 'D' ? 'selected' : ''}>Berabere</option>
-            <option value="B" ${m.result === 'B' ? 'selected' : ''}>Deplasman kazandı</option>
-          </select></label>
-        </div>
-        <p class="muted small">Kaydedince bu maçtan sonraki bütün puanlar otomatik yeniden hesaplanır.</p>
-        <p class="form-msg" id="ed-msg"></p>
-        <div class="row-actions">
-          <button type="button" class="btn btn-danger" data-del-match="${m.id}">Maçı Sil</button>
-          <button type="submit" class="btn btn-primary">Kaydet</button>
-        </div>
-      </form>`);
-    $('#edit-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const sa = $('#ed-sa').value.trim();
-      const sb = $('#ed-sb').value.trim();
-      try {
-        await admin((t) =>
-          Store.editMatch(t, id, {
-            playerA: Number($('#ed-a').value),
-            playerB: Number($('#ed-b').value),
-            scoreA: sa === '' ? null : Number(sa),
-            scoreB: sb === '' ? null : Number(sb),
-            result: $('#ed-r').value,
-          })
-        );
-        modal.close();
-        toast({ title: 'Maç düzeltildi', lines: ['Sıralama yeniden hesaplandı.'] });
-        await loadState(true);
-        loadLog();
-      } catch (err) {
-        $('#ed-msg').className = 'form-msg err';
-        $('#ed-msg').textContent = err.message;
-      }
-    });
-  }
-
-  async function deleteMatch(id) {
-    const m = S.state.matches.find((x) => x.id === id);
-    if (!m || !S.isAdmin) return;
-    if (!confirm(`${m.name_a} vs ${m.name_b} maçı silinsin mi?\nPuanlar yeniden hesaplanır.`)) return;
-    try {
-      await admin((t) => Store.deleteMatch(t, id));
-      if (modal.open) modal.close();
-      toast({ title: 'Maç silindi', lines: ['Sıralama yeniden hesaplandı.'] });
-      await loadState(true);
-      loadLog();
-    } catch (err) {
-      toast({ title: 'Silinemedi', lines: [err.message], error: true });
-    }
-  }
-
-  // ---------- Başlangıç ----------
-  $('#demo-banner').hidden = Store.mode !== 'local';
-  show(location.hash.slice(1) || 'siralama');
+  // ---------- başlangıç ----------
   let saved = null;
   try {
     saved = localStorage.getItem('zirzir_admin');
   } catch {}
-  loadState().then(async () => {
-    if (saved) {
-      S.token = saved;
-      try {
-        await Store.check(saved);
-        setAdmin(saved);
-      } catch {
-        setAdmin(null);
-      }
-    }
+  if (saved) {
+    S.token = saved;
+    Store.check(saved).catch(() => setToken(null));
+  }
+  load();
+  Store.subscribe(() => load());
+  setInterval(() => {
+    if (!document.hidden) load();
+  }, Store.mode === 'remote' ? 4000 : 15000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) load();
   });
-  connectLive();
 })();

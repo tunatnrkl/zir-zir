@@ -99,7 +99,7 @@
         const rows = await rpc('zz_admin_log', { p_token: t });
         return rows.map((r) => ({ ...r, created_at: num(r.created_at) }));
       },
-      addPlayer: (t, name) => rpc('zz_admin_add_player', { p_token: t, p_name: name }),
+      addPlayer: (name) => rpc('zz_add_player', { p_name: name }),
       renamePlayer: (t, id, name) => rpc('zz_admin_rename_player', { p_token: t, p_id: id, p_name: name }),
       deletePlayer: (t, id, rating) => rpc('zz_admin_delete_player', { p_token: t, p_id: id, p_rating: rating }),
       adjust: (t, id, amount, reason, before) =>
@@ -249,9 +249,8 @@
         requireAdmin(db, t);
         return [...db.audit].reverse().slice(0, 300);
       },
-      async addPlayer(t, name) {
+      async addPlayer(name) {
         return tx((db) => {
-          requireAdmin(db, t);
           const n = cleanName(name);
           if (db.players.some((p) => key(p.name) === key(n))) throw new StoreError('Bu isimde bir oyuncu zaten var.');
           const id = nextId(db);
