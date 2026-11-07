@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07090b">
+  <title>ZIR ZIR – FC 27 ELO Ligi</title>
+  <meta name="description" content="ZIR ZIR: FC 27 arkadaş grubu ELO sıralaması">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,800&family=Barlow:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#siralama" data-nav="siralama" aria-label="ZIR ZIR ana sayfa">
+      <span class="brand-mark">ZZ</span>
+      <span class="brand-text">
+        <span class="brand-name">ZIR ZIR</span>
+        <span class="brand-sub">FC 27 · ELO LİGİ</span>
+      </span>
+    </a>
+    <nav class="tabs" aria-label="Bölümler">
+      <a href="#siralama" data-nav="siralama" class="tab"><span class="tab-ico">🏆</span><span>Sıralama</span></a>
+      <a href="#mac-ekle" data-nav="mac-ekle" class="tab tab-cta"><span class="tab-ico">＋</span><span>Maç Ekle</span></a>
+      <a href="#maclar" data-nav="maclar" class="tab"><span class="tab-ico">⚽</span><span>Maçlar</span></a>
+      <a href="#ayarlar" data-nav="ayarlar" class="tab"><span class="tab-ico">⚙</span><span>Ayarlar</span></a>
+    </nav>
+    <div class="live" id="live" title="Canlı bağlantı"><span class="live-dot"></span><span id="live-text">CANLI</span></div>
+  </header>
+
+  <main id="app">
+    <!-- SIRALAMA -->
+    <section class="view" id="view-siralama">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Sezon Sıralaması</p>
+          <h1 class="title">ZIR ZIR <span class="neon">LİGİ</span></h1>
+        </div>
+        <div class="kpis" id="kpis"></div>
+      </div>
+
+      <div class="podium" id="podium"></div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Puan Durumu</h2>
+            <span class="muted small" id="table-note"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="leaderboard">
+              <thead>
+                <tr>
+                  <th class="c">#</th><th>Oyuncu</th><th class="r">ELO</th>
+                  <th class="c hide-sm">O</th><th class="c">G</th><th class="c">B</th><th class="c">M</th>
+                  <th class="r">%</th><th class="r hide-sm">Rekor</th><th class="c hide-md">Form</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="empty" id="empty-players" hidden>Henüz oyuncu yok. Ayarlar → yönetici kodu ile oyuncu ekle.</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Son Maçlar</h2>
+            <a href="#maclar" data-nav="maclar" class="link">Tümü →</a>
+          </div>
+          <ul class="match-list compact" id="recent"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- MAÇ EKLE -->
+    <section class="view" id="view-mac-ekle" hidden>
+      <div class="panel add-panel">
+        <p class="eyebrow">Hızlı Kayıt</p>
+        <h1 class="title sm">Maç <span class="neon">Ekle</span></h1>
+
+        <form id="match-form" autocomplete="off">
+          <div class="versus">
+            <label class="side">
+              <span class="side-label">Ev Sahibi</span>
+              <select id="sel-a" required></select>
+              <span class="side-elo" id="elo-a"></span>
+            </label>
+            <div class="vs">VS</div>
+            <label class="side">
+              <span class="side-label">Deplasman</span>
+              <select id="sel-b" required></select>
+              <span class="side-elo" id="elo-b"></span>
+            </label>
+          </div>
+
+          <div class="score-row">
+            <div class="stepper" data-for="score-a">
+              <button type="button" data-step="-1" aria-label="Ev sahibi golü azalt">−</button>
+              <input id="score-a" inputmode="numeric" pattern="[0-9]*" placeholder="–" aria-label="Ev sahibi skor">
+              <button type="button" data-step="1" aria-label="Ev sahibi golü artır">+</button>
+            </div>
+            <span class="score-sep">SKOR <small>(isteğe bağlı)</small></span>
+            <div class="stepper" data-for="score-b">
+              <button type="button" data-step="-1" aria-label="Deplasman golü azalt">−</button>
+              <input id="score-b" inputmode="numeric" pattern="[0-9]*" placeholder="–" aria-label="Deplasman skor">
+              <button type="button" data-step="1" aria-label="Deplasman golü artır">+</button>
+            </div>
+          </div>
+
+          <div class="result-pick" role="radiogroup" aria-label="Sonuç">
+            <button type="button" class="res-btn" data-result="A"><span class="res-top">Kazanan</span><span class="res-name" id="res-a">Ev Sahibi</span><span class="res-delta" id="pv-A"></span></button>
+            <button type="button" class="res-btn draw" data-result="D"><span class="res-top">Sonuç</span><span class="res-name">Berabere</span><span class="res-delta" id="pv-D"></span></button>
+            <button type="button" class="res-btn" data-result="B"><span class="res-top">Kazanan</span><span class="res-name" id="res-b">Deplasman</span><span class="res-delta" id="pv-B"></span></button>
+          </div>
+
+          <button class="btn btn-primary btn-xl" type="submit" id="save-match">Sonucu Kaydet</button>
+          <p class="form-msg" id="match-msg" role="status"></p>
+        </form>
+      </div>
+    </section>
+
+    <!-- MAÇLAR -->
+    <section class="view" id="view-maclar" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Fikstür Arşivi</p>
+            <h1 class="title sm">Maç <span class="neon">Geçmişi</span></h1>
+          </div>
+          <select id="filter-player" aria-label="Oyuncuya göre filtrele"></select>
+        </div>
+        <ul class="match-list" id="all-matches"></ul>
+        <button class="btn btn-ghost btn-block" id="more-matches" hidden>Daha fazla göster</button>
+      </div>
+    </section>
+
+    <!-- AYARLAR -->
+    <section class="view" id="view-ayarlar" hidden>
+      <div class="panel" id="login-panel">
+        <p class="eyebrow">Ayarlar</p>
+        <h1 class="title sm">Yönetici <span class="neon">Girişi</span></h1>
+        <p class="muted">Yönetici kodunu girersen ELO düzenleme, oyuncu ve maç yönetimi açılır.</p>
+        <form id="login-form" class="inline-form" autocomplete="off">
+          <input id="admin-code" type="password" placeholder="Yönetici kodu" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+          <button class="btn btn-primary" type="submit">Giriş</button>
+        </form>
+        <p class="form-msg" id="login-msg" role="status"></p>
+      </div>
+
+      <div id="admin-panel" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Yönetici Paneli</p>
+              <h1 class="title sm">Kontrol <span class="neon">Merkezi</span></h1>
+            </div>
+            <button class="btn btn-ghost" id="logout">Çıkış</button>
+          </div>
+          <p class="muted small">Maç düzeltme ve silme işlemleri <a href="#maclar" data-nav="maclar" class="link">Maçlar</a> sekmesinde her maçın yanında görünür.</p>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <h2>ELO Düzenle</h2>
+            <form id="adjust-form" class="stack" autocomplete="off">
+              <select id="adj-player" required></select>
+              <div class="quick">
+                <button type="button" data-amt="-100">−100</button>
+                <button type="button" data-amt="-50">−50</button>
+                <button type="button" data-amt="-10">−10</button>
+                <button type="button" data-amt="10">+10</button>
+                <button type="button" data-amt="50">+50</button>
+                <button type="button" data-amt="100">+100</button>
+              </div>
+              <input id="adj-amount" type="number" step="1" min="-1000" max="1000" placeholder="Miktar (ör. 50 veya -100)" required>
+              <input id="adj-reason" type="text" maxlength="120" placeholder="Sebep (isteğe bağlı)">
+              <button class="btn btn-primary" type="submit">Uygula</button>
+              <p class="form-msg" id="adj-msg" role="status"></p>
+            </form>
+          </div>
+
+          <div class="panel">
+            <h2>Oyuncular</h2>
+            <form id="player-form" class="inline-form" autocomplete="off">
+              <input id="new-player" type="text" maxlength="20" placeholder="Yeni oyuncu adı" required>
+              <button class="btn btn-primary" type="submit">Ekle</button>
+            </form>
+            <p class="form-msg" id="player-msg" role="status"></p>
+            <ul class="admin-players" id="admin-players"></ul>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Yönetici Kayıtları</h2>
+          <p class="muted small">Bütün manuel ELO değişiklikleri ve yönetici işlemleri burada kalıcı olarak tutulur.</p>
+          <ul class="log" id="admin-log"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">ZIR ZIR · FC 27 ELO Ligi · Hedef ortalama <span id="foot-target">1600</span></footer>
+
+  <!-- Profil / düzenleme penceresi -->
+  <dialog id="modal" class="modal">
+    <button class="modal-close" id="modal-close" aria-label="Kapat">✕</button>
+    <div id="modal-body"></div>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="/elo.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
