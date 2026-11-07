@@ -46,8 +46,14 @@
         S.byId = new Map(r.players.map((p) => [p.id, p]));
         renderTable();
         if (S.modal === 'settings') refreshSettings();
+        S.warned = false;
       } catch (e) {
         console.warn(e);
+        // Hatayı ekranda bir kez göster (her 4 saniyede tekrarlamasın)
+        if (!S.warned) {
+          S.warned = true;
+          toast({ title: 'Veritabanına bağlanılamadı', lines: [e.message || String(e)], error: true });
+        }
       }
     })().finally(() => {
       loading = null;
