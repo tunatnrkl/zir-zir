@@ -295,7 +295,7 @@
               const [w, l] = m.result === 'A' ? [m.a, m.b] : [m.b, m.a];
               const text = `${m.team ? '<span class="tag">2v2</span> ' : ''}<b>${esc(joinNames(w))}</b> <span class="d-up">${joinDeltas(w)}</span> · ${esc(joinNames(l))} <span class="d-down">${joinDeltas(l)}</span>`;
               const actions = S.token
-                ? `<span class="actions"><button class="btn btn-ghost btn-sm" data-flip="${m.id}" title="Kazananı değiştir">⇄</button><button class="btn btn-danger btn-sm" data-del-match="${m.id}">Sil</button></span>`
+                ? `<span class="actions"><button class="btn btn-ghost btn-sm" data-flip="${m.id}" title="Kazananı değiştir">⇄</button><button class="btn btn-danger btn-sm" data-del-match="${m.id}" title="Maçı iptal et, puanlar geri alınsın">İptal Et</button></span>`
                 : '';
               return `<li><span class="grow">${text}</span><span class="when">${when(m.played_at)}</span>${actions}</li>`;
             })
@@ -328,7 +328,7 @@
     elo_adjust: (d) =>
       `Manuel ELO: ${d.name} ${signed(d.amount)}${d.before != null ? ` (${d.before} → ${d.before + d.amount})` : ''}${d.reason ? ` · “${d.reason}”` : ''}`,
     match_flip: (d) => `Kazanan değişti: ${d.teamA} – ${d.teamB} → ${d.newWinner === 'A' ? d.teamA : d.teamB}`,
-    match_delete: (d) => `Maç silindi: ${d.teamA ?? '?'} – ${d.teamB ?? '?'}`,
+    match_delete: (d) => `Maç iptal edildi: ${d.teamA ?? '?'} – ${d.teamB ?? '?'}`,
   };
 
   async function loadLog() {
@@ -411,8 +411,25 @@
         await admin((tk) => Store.flipMatch(tk, m.id));
       } else if (t.dataset.delMatch) {
         const m = S.matches.find((x) => x.id === Number(t.dataset.delMatch));
-        if (!m || !confirm(`${joinNames(m.a)} – ${joinNames(m.b)} maçı silinsin mi? Puanlar yeniden hesaplanır.`)) return;
+        if (!m) return;
+        const who = [...m.a, ...m.b].map((p) => p.id);
+        if (
+          !confirm(
+            `${joinNames(m.a)} – ${joinNames(m.b)} maçı iptal edilsin mi?\n\nMaç geçmişten silinir ve bu maçtan kazanılan/kaybedilen puanlar geri alınır.`
+          )
+        )
+          return;
+        const before = new Map(who.map((id) => [id, S.byId.get(id)?.rating]));
         await admin((tk) => Store.deleteMatch(tk, m.id));
+        await load(true);
+        const lines = who
+          .map((id) => {
+            const p = S.byId.get(id);
+            const old = before.get(id);
+            return p && old != null ? `${p.name}: ${old} → ${p.rating} (${signed(p.rating - old)})` : null;
+          })
+          .filter(Boolean);
+        toast({ title: 'Maç iptal edildi', lines: ['Puanlar geri alındı.', ...lines] });
       } else if (t.dataset.rename) {
         const p = S.byId.get(Number(t.dataset.rename));
         const name = p && prompt('Yeni ad:', p.name);
