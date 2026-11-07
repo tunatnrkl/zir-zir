@@ -6,6 +6,7 @@
 -- Bütün yazma işlemleri aşağıdaki fonksiyonlardan geçer. Tablolara
 -- dışarıdan doğrudan yazılamaz (RLS). Yönetici kodu burada, sunucu
 -- tarafında doğrulanır; veritabanında yalnızca bcrypt özeti saklanır.
+-- Puanlar (chess.com mantığı, Glicko) tarayıcıda maç geçmişinden hesaplanır.
 -- =====================================================================
 
 create schema if not exists extensions;
@@ -19,15 +20,18 @@ create table if not exists public.players (
   created_at  bigint not null
 );
 
+-- 1v1: player_a vs player_b. 2v2: (player_a + player_a2) vs (player_b + player_b2).
 create table if not exists public.matches (
   id          bigserial primary key,
   player_a    bigint not null references public.players(id) on delete cascade,
   player_b    bigint not null references public.players(id) on delete cascade,
-  score_a     int,
-  score_b     int,
-  result      text   not null check (result in ('A','B','D')),
+  player_a2   bigint references public.players(id) on delete cascade,
+  player_b2   bigint references public.players(id) on delete cascade,
+  result      text   not null check (result in ('A','B')),
   played_at   bigint not null,
-  check (player_a <> player_b)
+  check (player_a <> player_b),
+  check ((player_a2 is null) = (player_b2 is null)),
+  check (player_a2 is null or (player_a2 not in (player_a, player_b) and player_b2 not in (player_a, player_b, player_a2)))
 );
 create index if not exists matches_played_at_idx on public.matches(played_at);
 
@@ -124,37 +128,37 @@ begin
   return n;
 end $$;
 
--- Maç girdisini doğrular, sonucu (gerekirse skordan) belirler.
-create or replace function public.zz_check_match(
-  p_a bigint, p_b bigint, p_result text, p_score_a int, p_score_b int
-) returns text
+create or replace function public.zz_names(p_ids bigint[]) returns text
+language sql stable security definer set search_path = public as
+$$ select string_agg(name, ' & ' order by array_position(p_ids, id)) from public.players where id = any(p_ids) $$;
+
+-- Maçı doğrular ve kaydeder (1v1 için p_a2/p_b2 boş).
+create or replace function public.zz_insert_match(
+  p_a bigint, p_a2 bigint, p_b bigint, p_b2 bigint, p_result text
+) returns bigint
 language plpgsql security definer set search_path = public as $$
-declare from_score text;
+declare ids bigint[]; t bigint := public.zz_now(); new_id bigint;
 begin
-  if p_a is null or p_b is null then raise exception 'İki oyuncuyu da seç.'; end if;
-  if p_a = p_b then raise exception 'Bir oyuncu kendisiyle maç yapamaz.'; end if;
-  if not exists (select 1 from public.players where id = p_a)
-     or not exists (select 1 from public.players where id = p_b) then
+  if (p_a2 is null) <> (p_b2 is null) then raise exception 'Takımlar 2''şer kişi olmalı.'; end if;
+  ids := array_remove(array[p_a, p_a2, p_b, p_b2], null);
+  if p_a is null or p_b is null then raise exception 'Oyuncuları seç.'; end if;
+  if (select count(distinct x) from unnest(ids) x) <> array_length(ids, 1) then
+    raise exception 'Aynı oyuncu iki kere seçilemez.';
+  end if;
+  if (select count(*) from public.players where id = any(ids)) <> array_length(ids, 1) then
     raise exception 'Oyuncu bulunamadı.';
   end if;
-  if (p_score_a is null) <> (p_score_b is null) then
-    raise exception 'Skor girilecekse iki taraf da girilmeli.';
+  if p_result is null or p_result not in ('A','B') then raise exception 'Kazananı seç.'; end if;
+  if exists (select 1 from public.matches
+             where player_a = p_a and player_b = p_b
+               and player_a2 is not distinct from p_a2 and player_b2 is not distinct from p_b2
+               and result = p_result and played_at > t - 15000) then
+    raise exception 'Bu maç az önce kaydedildi. İki kere basmış olabilirsin.';
   end if;
-  if p_score_a is not null then
-    if p_score_a not between 0 and 99 or p_score_b not between 0 and 99 then
-      raise exception 'Skor 0-99 arası bir tam sayı olmalı.';
-    end if;
-    from_score := case when p_score_a > p_score_b then 'A' when p_score_a < p_score_b then 'B' else 'D' end;
-  end if;
-  if p_result is null or p_result = '' then
-    if from_score is null then raise exception 'Kazananı seç.'; end if;
-    return from_score;
-  end if;
-  if p_result not in ('A','B','D') then raise exception 'Geçersiz sonuç.'; end if;
-  if from_score is not null and from_score <> p_result then
-    raise exception 'Skor ile seçilen sonuç uyuşmuyor.';
-  end if;
-  return p_result;
+  insert into public.matches(player_a, player_a2, player_b, player_b2, result, played_at)
+  values (p_a, p_a2, p_b, p_b2, p_result, t) returning id into new_id;
+  perform public.zz_bump();
+  return new_id;
 end $$;
 
 -- ---------- Herkese açık fonksiyonlar ----------
@@ -162,19 +166,29 @@ create or replace function public.zz_version() returns bigint
 language sql stable security definer set search_path = public as
 $$ select version from public.app_meta where id = 1 $$;
 
-create or replace function public.zz_add_match(
-  p_a bigint, p_b bigint, p_result text default null, p_score_a int default null, p_score_b int default null
+create or replace function public.zz_add_match(p_a bigint, p_b bigint, p_result text) returns bigint
+language sql security definer set search_path = public as
+$$ select public.zz_insert_match(p_a, null, p_b, null, p_result) $$;
+
+create or replace function public.zz_add_team_match(
+  p_a bigint, p_a2 bigint, p_b bigint, p_b2 bigint, p_result text
 ) returns bigint
 language plpgsql security definer set search_path = public as $$
-declare r text; t bigint := public.zz_now(); new_id bigint;
 begin
-  r := public.zz_check_match(p_a, p_b, p_result, p_score_a, p_score_b);
-  if exists (select 1 from public.matches
-             where player_a = p_a and player_b = p_b and result = r and played_at > t - 15000) then
-    raise exception 'Bu maç az önce kaydedildi. İki kere basmış olabilirsin.';
+  if p_a2 is null or p_b2 is null then raise exception 'Takımlar 2''şer kişi olmalı.'; end if;
+  return public.zz_insert_match(p_a, p_a2, p_b, p_b2, p_result);
+end $$;
+
+create or replace function public.zz_add_player(p_name text) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare n text; new_id bigint;
+begin
+  n := public.zz_clean_name(p_name);
+  if exists (select 1 from public.players where name_key = lower(n)) then
+    raise exception 'Bu isimde bir oyuncu zaten var.';
   end if;
-  insert into public.matches(player_a, player_b, score_a, score_b, result, played_at)
-  values (p_a, p_b, p_score_a, p_score_b, r, t) returning id into new_id;
+  insert into public.players(name, name_key, created_at) values (n, lower(n), public.zz_now()) returning id into new_id;
+  perform public.zz_audit('player_add', jsonb_build_object('playerId', new_id, 'name', n));
   perform public.zz_bump();
   return new_id;
 end $$;
@@ -230,22 +244,6 @@ begin
   return query select * from public.audit_log order by id desc limit 300;
 end $$;
 
--- Oyuncu eklemek herkese açık
-drop function if exists public.zz_admin_add_player(text, text);
-create or replace function public.zz_add_player(p_name text) returns bigint
-language plpgsql security definer set search_path = public as $$
-declare n text; new_id bigint;
-begin
-  n := public.zz_clean_name(p_name);
-  if exists (select 1 from public.players where name_key = lower(n)) then
-    raise exception 'Bu isimde bir oyuncu zaten var.';
-  end if;
-  insert into public.players(name, name_key, created_at) values (n, lower(n), public.zz_now()) returning id into new_id;
-  perform public.zz_audit('player_add', jsonb_build_object('playerId', new_id, 'name', n));
-  perform public.zz_bump();
-  return new_id;
-end $$;
-
 create or replace function public.zz_admin_rename_player(p_token text, p_id bigint, p_name text) returns void
 language plpgsql security definer set search_path = public as $$
 declare n text; old text;
@@ -270,7 +268,7 @@ begin
   perform public.zz_require_admin(p_token);
   select name into old from public.players where id = p_id;
   if not found then raise exception 'Oyuncu bulunamadı.'; end if;
-  select count(*) into n from public.matches where player_a = p_id or player_b = p_id;
+  select count(*) into n from public.matches where p_id in (player_a, player_b, player_a2, player_b2);
   delete from public.players where id = p_id; -- maçlar ve düzeltmeler CASCADE ile silinir
   perform public.zz_audit('player_delete',
     jsonb_build_object('playerId', p_id, 'name', old, 'rating', p_rating, 'matchesRemoved', n));
@@ -296,25 +294,19 @@ begin
   perform public.zz_bump();
 end $$;
 
-create or replace function public.zz_admin_edit_match(
-  p_token text, p_id bigint, p_a bigint, p_b bigint, p_result text, p_score_a int default null, p_score_b int default null
-) returns void
+-- Yanlış girilen maçın kazananını tersine çevirir.
+create or replace function public.zz_admin_flip_match(p_token text, p_id bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare old public.matches; r text;
+declare old public.matches;
 begin
   perform public.zz_require_admin(p_token);
   select * into old from public.matches where id = p_id;
   if not found then raise exception 'Maç bulunamadı.'; end if;
-  r := public.zz_check_match(p_a, p_b, p_result, p_score_a, p_score_b);
-  update public.matches set player_a = p_a, player_b = p_b, score_a = p_score_a, score_b = p_score_b, result = r
-  where id = p_id;
-  perform public.zz_audit('match_edit', jsonb_build_object(
-    'matchId', p_id,
-    'before', jsonb_build_object('player_a', old.player_a, 'player_b', old.player_b,
-      'name_a', (select name from public.players where id = old.player_a),
-      'name_b', (select name from public.players where id = old.player_b),
-      'score_a', old.score_a, 'score_b', old.score_b, 'result', old.result),
-    'after', jsonb_build_object('playerA', p_a, 'playerB', p_b, 'scoreA', p_score_a, 'scoreB', p_score_b, 'result', r)));
+  update public.matches set result = case when result = 'A' then 'B' else 'A' end where id = p_id;
+  perform public.zz_audit('match_flip', jsonb_build_object('matchId', p_id,
+    'teamA', public.zz_names(array[old.player_a, old.player_a2]),
+    'teamB', public.zz_names(array[old.player_b, old.player_b2]),
+    'newWinner', case when old.result = 'A' then 'B' else 'A' end));
   perform public.zz_bump();
 end $$;
 
@@ -326,10 +318,10 @@ begin
   select * into old from public.matches where id = p_id;
   if not found then raise exception 'Maç bulunamadı.'; end if;
   delete from public.matches where id = p_id;
-  perform public.zz_audit('match_delete', jsonb_build_object('matchId', p_id, 'match', jsonb_build_object(
-    'name_a', (select name from public.players where id = old.player_a),
-    'name_b', (select name from public.players where id = old.player_b),
-    'score_a', old.score_a, 'score_b', old.score_b, 'result', old.result)));
+  perform public.zz_audit('match_delete', jsonb_build_object('matchId', p_id,
+    'teamA', public.zz_names(array[old.player_a, old.player_a2]),
+    'teamB', public.zz_names(array[old.player_b, old.player_b2]),
+    'result', old.result));
   perform public.zz_bump();
 end $$;
 
@@ -337,23 +329,26 @@ end $$;
 -- İç yardımcılar dışarıya kapalı
 revoke execute on function
   public.zz_now(), public.zz_bump(), public.zz_audit(text, jsonb), public.zz_require_admin(text),
-  public.zz_clean_name(text), public.zz_check_match(bigint, bigint, text, int, int)
+  public.zz_clean_name(text), public.zz_names(bigint[]),
+  public.zz_insert_match(bigint, bigint, bigint, bigint, text)
   from public, anon, authenticated;
 
 -- Dışarıya açık olanlar (yönetici olanlar zaten token ister)
 revoke execute on function
-  public.zz_version(), public.zz_add_match(bigint, bigint, text, int, int), public.zz_admin_login(text),
-  public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
-  public.zz_add_player(text), public.zz_admin_rename_player(text, bigint, text),
-  public.zz_admin_delete_player(text, bigint, int), public.zz_admin_adjust(text, bigint, int, text, int),
-  public.zz_admin_edit_match(text, bigint, bigint, bigint, text, int, int), public.zz_admin_delete_match(text, bigint)
+  public.zz_version(), public.zz_add_match(bigint, bigint, text),
+  public.zz_add_team_match(bigint, bigint, bigint, bigint, text), public.zz_add_player(text),
+  public.zz_admin_login(text), public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
+  public.zz_admin_rename_player(text, bigint, text), public.zz_admin_delete_player(text, bigint, int),
+  public.zz_admin_adjust(text, bigint, int, text, int), public.zz_admin_flip_match(text, bigint),
+  public.zz_admin_delete_match(text, bigint)
   from public;
 grant execute on function
-  public.zz_version(), public.zz_add_match(bigint, bigint, text, int, int), public.zz_admin_login(text),
-  public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
-  public.zz_add_player(text), public.zz_admin_rename_player(text, bigint, text),
-  public.zz_admin_delete_player(text, bigint, int), public.zz_admin_adjust(text, bigint, int, text, int),
-  public.zz_admin_edit_match(text, bigint, bigint, bigint, text, int, int), public.zz_admin_delete_match(text, bigint)
+  public.zz_version(), public.zz_add_match(bigint, bigint, text),
+  public.zz_add_team_match(bigint, bigint, bigint, bigint, text), public.zz_add_player(text),
+  public.zz_admin_login(text), public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
+  public.zz_admin_rename_player(text, bigint, text), public.zz_admin_delete_player(text, bigint, int),
+  public.zz_admin_adjust(text, bigint, int, text, int), public.zz_admin_flip_match(text, bigint),
+  public.zz_admin_delete_match(text, bigint)
   to anon, authenticated;
 
 -- PostgREST'in yeni fonksiyonları hemen görmesi için

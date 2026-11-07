@@ -64,8 +64,6 @@ tr.top1 .rank { background: var(--neon); color: #001a0d; }
 tr.top2 .rank { background: #cfd8e3; color: #111; }
 tr.top3 .rank { background: #d99a5b; color: #1b0d00; }
 .name { font-weight: 700; display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
-.quip { display: block; font: 600 11px/1.2 var(--head); letter-spacing: .5px; text-transform: uppercase; color: var(--loss); margin-top: 2px; }
-.quip.good { color: var(--neon); }
 .elo { font: 800 21px/1 var(--head); color: var(--neon); }
 .w { color: var(--win); } .l { color: var(--loss); }
 .empty { color: var(--muted); text-align: center; padding: 30px 8px; }
@@ -110,6 +108,16 @@ tr.top3 .rank { background: #d99a5b; color: #1b0d00; }
 .chip:hover { border-color: var(--muted); }
 .chip.selected { border-color: var(--neon); background: var(--neon-dim); }
 
+/* 2v2 takım seçimi */
+.teams { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.team-box { padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--line); min-width: 0; }
+.team-box.filled { border-style: solid; border-color: var(--neon); }
+.team-box:last-child.filled { border-color: #4dc3ff; }
+.team-box span { display: block; font: 700 11px/1.2 var(--head); letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.team-box b { display: block; font: 700 16px/1.2 var(--head); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.selected.t2 { border-color: #4dc3ff; background: rgba(77,195,255,.12); }
+.tag { display: inline-block; padding: 1px 5px; border-radius: 4px; font: 700 10px/1.3 var(--head); letter-spacing: .5px; background: rgba(77,195,255,.15); color: #4dc3ff; vertical-align: 1px; }
+
 /* Kazanan seçimi */
 .winners { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .winner {
@@ -117,7 +125,7 @@ tr.top3 .rank { background: #d99a5b; color: #1b0d00; }
   border-radius: 14px; border: 2px solid var(--line); background: var(--panel2); cursor: pointer; transition: border-color .15s, background .15s;
 }
 .winner:hover { border-color: var(--neon); background: var(--neon-dim); }
-.winner b { font: 800 24px/1.05 var(--head); text-transform: uppercase; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.winner b { font: 800 24px/1.1 var(--head); text-transform: uppercase; max-width: 100%; overflow-wrap: anywhere; text-align: center; }
 .winner span { font: 700 14px/1 var(--head); color: var(--neon); }
 
 /* Formlar */

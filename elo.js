@@ -1,214 +1,187 @@
 /**
- * ZIR ZIR ELO motoru.
+ * ZIR ZIR puan motoru – chess.com ile aynı mantık (Glicko).
  *
- * Puanlar veritabanında saklanmaz; oyuncu katılımları, maçlar ve manuel
- * düzeltmeler zaman sırasına göre baştan oynatılarak hesaplanır. Böylece bir
- * maç düzeltildiğinde/silindiğinde bütün sıralama her zaman tutarlı kalır.
+ * Her oyuncunun bir puanı (rating) ve bir "belirsizlik" değeri (RD) vardır:
+ *  - Yeni oyuncunun RD'si yüksektir → ilk maçlarda puanı hızlı değişir.
+ *  - Oynadıkça RD düşer → puan oturur, maç başına değişim küçülür (~8-10).
+ *  - Uzun süre oynamayanın RD'si yeniden yükselir.
+ *  - Beklenen sonuç iki puan arasındaki farka göre hesaplanır; çok güçlü
+ *    oyuncu çok zayıfı yenerse neredeyse hiç puan kazanmaz, kaybederse çok kaybeder.
  *
- * Kurallar:
- *  - Herkes START_RATING (1000) ile başlar.
- *  - Beklenen skor standart Elo: E = 1 / (1 + 10^((Rb - Ra) / 400)).
- *  - Değişim: K * (S - E). K, oyuncunun seviyesine göre küçülür
- *    (yükseldikçe puan kazanmak zorlaşır), ilk maçlarda daha büyüktür.
- *  - Lig dengesi bonusu: Grubun ortalaması TARGET_AVERAGE (1600) altındayken
- *    kazanana (beraberlikte iki tarafa yarım) küçük bir bonus verilir; ortalama
- *    hedefin üzerine çıkarsa bonus negatife döner. Bonus farkla orantılı
- *    olduğundan ortalama zamanla ~1600 civarında dengelenir.
+ * 2v2 takım maçlarında beklenen sonuç iki takımın puan ortalamalarına göre
+ * hesaplanır; her oyuncunun değişimi kendi RD'sine göre ölçeklenir.
+ *
+ * Puanlar saklanmaz: oyuncu katılımları, maçlar ve manuel düzeltmeler zaman
+ * sırasıyla baştan oynatılır. Bir maç düzeltilince/silinince her şey tutarlı kalır.
  */
-
 (function (root) {
-'use strict';
+  'use strict';
 
-const START_RATING = 1000;
-const TARGET_AVERAGE = 1600;
-const RATING_FLOOR = 100;
-const PROVISIONAL_GAMES = 10;
-const BONUS_DIVISOR = 20; // her 20 puanlık açık için 1 bonus puan
-const BONUS_MIN = -8;
-const BONUS_MAX = 25;
+  const START_RATING = 1000;
+  const START_RD = 200; // yeni oyuncunun belirsizliği
+  const MIN_RD = 50; // en oturmuş hal
+  const MAX_RD = 350;
+  const RD_GROWTH_PER_DAY = 10; // oynamayınca RD'nin günlük artışı (≈1 yıl ara → neredeyse yeni oyuncu)
+  const RATING_FLOOR = 100;
+  const DAY = 86400000;
+  const Q = Math.LN10 / 400;
 
-function kFactor(rating, gamesPlayed) {
-  if (gamesPlayed < PROVISIONAL_GAMES) return 40;
-  if (rating < 1400) return 32;
-  if (rating < 1800) return 24;
-  if (rating < 2100) return 20;
-  return 16;
-}
+  const g = (rd) => 1 / Math.sqrt(1 + (3 * Q * Q * rd * rd) / (Math.PI * Math.PI));
+  const expected = (r, rOpp, rdOpp) => 1 / (1 + Math.pow(10, (-g(rdOpp) * (r - rOpp)) / 400));
 
-function expectedScore(ra, rb) {
-  return 1 / (1 + Math.pow(10, (rb - ra) / 400));
-}
-
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-/** Grubun ortalamasına göre maç başına lig dengesi bonusu. */
-function balanceBonus(average) {
-  return clamp(Math.round((TARGET_AVERAGE - average) / BONUS_DIVISOR), BONUS_MIN, BONUS_MAX);
-}
-
-/**
- * Tek bir maçın puan değişimlerini hesaplar.
- * @param {{rating:number, games:number}} a
- * @param {{rating:number, games:number}} b
- * @param {'A'|'B'|'D'} result
- * @param {number} average  maç anındaki grup ortalaması
- */
-function computeMatch(a, b, result, average) {
-  const ea = expectedScore(a.rating, b.rating);
-  const eb = 1 - ea;
-  const sa = result === 'A' ? 1 : result === 'D' ? 0.5 : 0;
-  const sb = 1 - sa;
-  const ka = kFactor(a.rating, a.games);
-  const kb = kFactor(b.rating, b.games);
-  const bonus = balanceBonus(average);
-
-  let da = ka * (sa - ea);
-  let db = kb * (sb - eb);
-
-  // Bonus, oyuncunun K'sı ile ölçeklenir: üst seviyede bonus da küçülür.
-  if (result === 'A') da += (bonus * ka) / 32;
-  else if (result === 'B') db += (bonus * kb) / 32;
-  else {
-    da += (bonus * ka) / 64;
-    db += (bonus * kb) / 64;
+  /** Maç anındaki RD (oynamadığı süre kadar artmış hali). */
+  function currentRd(p, t) {
+    const days = p.last != null && t != null ? Math.max(0, (t - p.last) / DAY) : 0;
+    return Math.min(MAX_RD, Math.sqrt(p.rd * p.rd + RD_GROWTH_PER_DAY * RD_GROWTH_PER_DAY * days));
   }
 
-  da = Math.round(da);
-  db = Math.round(db);
+  /**
+   * Tek oyuncunun Glicko güncellemesi.
+   * @param r   oyuncunun puanı      @param rd  oyuncunun RD'si
+   * @param rOpp rakip puanı         @param rdOpp rakip RD'si
+   * @param s   1 kazandı, 0 kaybetti
+   * @param rForE beklenen sonuç için kullanılacak puan (takımda takım ortalaması)
+   */
+  function step(r, rd, rOpp, rdOpp, s, rForE = r) {
+    const gj = g(rdOpp);
+    const e = expected(rForE, rOpp, rdOpp);
+    const d2inv = Q * Q * gj * gj * e * (1 - e);
+    const denom = 1 / (rd * rd) + d2inv;
+    let newR = r + (Q / denom) * gj * (s - e);
+    newR = Math.max(RATING_FLOOR, newR);
+    const newRd = Math.max(MIN_RD, Math.sqrt(1 / denom));
+    return { r: newR, rd: newRd, e };
+  }
 
-  // Kazanan her zaman puan kazanır, kaybeden her zaman puan kaybeder.
-  if (result === 'A') { da = Math.max(1, da); db = Math.min(-1, db); }
-  if (result === 'B') { db = Math.max(1, db); da = Math.min(-1, da); }
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const rms = (xs) => Math.sqrt(xs.reduce((a, b) => a + b * b, 0) / xs.length);
 
-  // Taban puanın altına düşülmez.
-  da = Math.max(RATING_FLOOR - a.rating, da);
-  db = Math.max(RATING_FLOOR - b.rating, db);
-
-  return { deltaA: da, deltaB: db, expectedA: ea, kA: ka, kB: kb, bonus };
-}
-
-/**
- * Bütün geçmişi baştan oynatır.
- * @param {Array<{id:number,name:string,created_at:number}>} players
- * @param {Array<{id:number,player_a:number,player_b:number,score_a:?number,score_b:?number,result:string,played_at:number}>} matches
- * @param {Array<{id:number,player_id:number,amount:number,reason:string,created_at:number}>} adjustments
- */
-function replay(players, matches, adjustments) {
-  const events = [];
-  for (const p of players) events.push({ t: p.created_at, order: 0, id: p.id, kind: 'join', p });
-  for (const a of adjustments) events.push({ t: a.created_at, order: 1, id: a.id, kind: 'adjust', a });
-  for (const m of matches) events.push({ t: m.played_at, order: 2, id: m.id, kind: 'match', m });
-  events.sort((x, y) => x.t - y.t || x.order - y.order || x.id - y.id);
-
-  const stats = new Map();
-  let sum = 0;
-  const outMatches = [];
-  const outAdjustments = [];
-
-  for (const ev of events) {
-    if (ev.kind === 'join') {
-      const p = ev.p;
-      stats.set(p.id, {
-        id: p.id,
-        name: p.name,
-        created_at: p.created_at,
-        rating: START_RATING,
-        peak: START_RATING,
-        games: 0,
-        wins: 0,
-        draws: 0,
-        losses: 0,
-        goalsFor: 0,
-        goalsAgainst: 0,
-        form: [],
-        history: [{ t: p.created_at, rating: START_RATING }],
+  /**
+   * Bir maçın sonucunu hesaplar (1v1 veya 2v2).
+   * @param {Array<{r:number, rd:number, last:?number}>} teamA
+   * @param {Array<{r:number, rd:number, last:?number}>} teamB
+   * @param {'A'|'B'} result
+   * @param {number} t maç zamanı (ms)
+   * @returns {{a: Array<{r,rd,delta}>, b: Array<{r,rd,delta}>}}
+   */
+  function computeGame(teamA, teamB, result, t) {
+    const rdA = teamA.map((p) => currentRd(p, t));
+    const rdB = teamB.map((p) => currentRd(p, t));
+    const avgA = avg(teamA.map((p) => p.r));
+    const avgB = avg(teamB.map((p) => p.r));
+    const sA = result === 'A' ? 1 : 0;
+    const side = (team, rds, ownAvg, oppAvg, oppRd, s) =>
+      team.map((p, i) => {
+        const n = step(p.r, rds[i], oppAvg, oppRd, s, ownAvg);
+        return { r: n.r, rd: n.rd, delta: Math.round(n.r) - Math.round(p.r) };
       });
-      sum += START_RATING;
-    } else if (ev.kind === 'adjust') {
-      const a = ev.a;
-      const s = stats.get(a.player_id);
-      if (!s) continue;
-      const applied = Math.max(RATING_FLOOR - s.rating, a.amount);
-      const before = s.rating;
-      s.rating += applied;
-      sum += applied;
+    return {
+      a: side(teamA, rdA, avgA, avgB, rms(rdB), sA),
+      b: side(teamB, rdB, avgB, avgA, rms(rdA), 1 - sA),
+    };
+  }
+
+  /**
+   * Bütün geçmişi baştan oynatır.
+   * matches: {id, player_a, player_b, player_a2?, player_b2?, result, played_at}
+   */
+  function replay(players, matches, adjustments) {
+    const events = [];
+    for (const p of players) events.push({ t: p.created_at, order: 0, id: p.id, kind: 'join', p });
+    for (const a of adjustments) events.push({ t: a.created_at, order: 1, id: a.id, kind: 'adjust', a });
+    for (const m of matches) events.push({ t: m.played_at, order: 2, id: m.id, kind: 'match', m });
+    events.sort((x, y) => x.t - y.t || x.order - y.order || x.id - y.id);
+
+    const stats = new Map();
+    const outMatches = [];
+    const outAdjustments = [];
+    const setRating = (s, r) => {
+      s.r = r;
+      s.rating = Math.round(r);
       s.peak = Math.max(s.peak, s.rating);
-      s.history.push({ t: a.created_at, rating: s.rating });
-      outAdjustments.push({ ...a, applied, before, after: s.rating, player_name: s.name });
-    } else {
-      const m = ev.m;
-      const A = stats.get(m.player_a);
-      const B = stats.get(m.player_b);
-      if (!A || !B || A === B) continue;
-      const average = sum / stats.size;
-      const r = computeMatch(A, B, m.result, average);
-      const beforeA = A.rating;
-      const beforeB = B.rating;
-      A.rating += r.deltaA;
-      B.rating += r.deltaB;
-      sum += r.deltaA + r.deltaB;
-      for (const [s, res, gf, ga] of [
-        [A, m.result === 'A' ? 'W' : m.result === 'D' ? 'D' : 'L', m.score_a, m.score_b],
-        [B, m.result === 'B' ? 'W' : m.result === 'D' ? 'D' : 'L', m.score_b, m.score_a],
-      ]) {
-        s.games++;
-        if (res === 'W') s.wins++;
-        else if (res === 'D') s.draws++;
-        else s.losses++;
-        if (gf != null && ga != null) { s.goalsFor += gf; s.goalsAgainst += ga; }
-        s.form.push(res);
-        if (s.form.length > 5) s.form.shift();
-        s.peak = Math.max(s.peak, s.rating);
-        s.history.push({ t: m.played_at, rating: s.rating });
+    };
+
+    for (const ev of events) {
+      if (ev.kind === 'join') {
+        const p = ev.p;
+        stats.set(p.id, {
+          id: p.id,
+          name: p.name,
+          created_at: p.created_at,
+          r: START_RATING,
+          rd: START_RD,
+          last: null,
+          rating: START_RATING,
+          peak: START_RATING,
+          games: 0,
+          wins: 0,
+          losses: 0,
+          draws: 0,
+          form: [],
+        });
+      } else if (ev.kind === 'adjust') {
+        const a = ev.a;
+        const s = stats.get(a.player_id);
+        if (!s) continue;
+        const before = s.rating;
+        setRating(s, Math.max(RATING_FLOOR, s.r + a.amount));
+        outAdjustments.push({ ...a, before, after: s.rating, player_name: s.name });
+      } else {
+        const m = ev.m;
+        const idsA = [m.player_a, m.player_a2].filter((x) => x != null);
+        const idsB = [m.player_b, m.player_b2].filter((x) => x != null);
+        const all = [...idsA, ...idsB];
+        if (new Set(all).size !== all.length || !all.every((id) => stats.has(id))) continue;
+        if (m.result !== 'A' && m.result !== 'B') continue; // eski beraberlikler sayılmaz
+        const A = idsA.map((id) => stats.get(id));
+        const B = idsB.map((id) => stats.get(id));
+        const before = [...A, ...B].map((s) => s.rating);
+        const res = computeGame(A, B, m.result, m.played_at);
+
+        const apply = (team, out, won) =>
+          team.forEach((s, i) => {
+            setRating(s, out[i].r);
+            s.rd = out[i].rd;
+            s.last = m.played_at;
+            s.games++;
+            if (won) s.wins++;
+            else s.losses++;
+            s.form.push(won ? 'W' : 'L');
+            if (s.form.length > 5) s.form.shift();
+          });
+        apply(A, res.a, m.result === 'A');
+        apply(B, res.b, m.result === 'B');
+
+        outMatches.push({
+          id: m.id,
+          team: A.length > 1 || B.length > 1,
+          result: m.result,
+          played_at: m.played_at,
+          player_a: m.player_a,
+          player_b: m.player_b,
+          a: A.map((s, i) => ({ id: s.id, name: s.name, before: before[i], delta: res.a[i].delta })),
+          b: B.map((s, i) => ({ id: s.id, name: s.name, before: before[A.length + i], delta: res.b[i].delta })),
+        });
       }
-      outMatches.push({
-        id: m.id,
-        player_a: m.player_a,
-        player_b: m.player_b,
-        name_a: A.name,
-        name_b: B.name,
-        score_a: m.score_a,
-        score_b: m.score_b,
-        result: m.result,
-        played_at: m.played_at,
-        before_a: beforeA,
-        before_b: beforeB,
-        delta_a: r.deltaA,
-        delta_b: r.deltaB,
-      });
     }
+
+    const list = [...stats.values()].sort(
+      (x, y) => y.rating - x.rating || y.wins - x.wins || x.games - y.games || x.id - y.id
+    );
+    list.forEach((s, i) => {
+      s.rank = i + 1;
+      s.winRate = s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0;
+    });
+
+    return {
+      players: list,
+      matches: outMatches.reverse(), // en yeni en üstte
+      adjustments: outAdjustments.reverse(),
+      average: list.length ? Math.round(list.reduce((a, s) => a + s.r, 0) / list.length) : 0,
+    };
   }
 
-  const list = [...stats.values()].sort(
-    (x, y) => y.rating - x.rating || y.wins - x.wins || x.games - y.games || x.id - y.id
-  );
-  list.forEach((s, i) => {
-    s.rank = i + 1;
-    s.winRate = s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0;
-  });
-
-  return {
-    players: list,
-    matches: outMatches.reverse(), // en yeni en üstte
-    adjustments: outAdjustments.reverse(),
-    average: list.length ? Math.round(sum / list.length) : 0,
-  };
-}
-
-const api = {
-  START_RATING,
-  TARGET_AVERAGE,
-  RATING_FLOOR,
-  kFactor,
-  expectedScore,
-  balanceBonus,
-  computeMatch,
-  replay,
-};
-
-// Hem Node (sunucu) hem tarayıcı (maç önizlemesi) aynı kodu kullanır.
-if (typeof module !== 'undefined' && module.exports) module.exports = api;
-else root.ZirElo = api;
+  const api = { START_RATING, START_RD, MIN_RD, RATING_FLOOR, g, expected, currentRd, computeGame, replay };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.ZirElo = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

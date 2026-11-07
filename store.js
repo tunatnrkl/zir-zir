@@ -1,8 +1,10 @@
 /*
  * ZIR ZIR veri katmanı.
  *  - Supabase ayarlıysa: ortak veritabanı (bütün yazmalar sunucu fonksiyonlarından geçer).
- *  - Ayarlı değilse: demo modu, veriler bu tarayıcının localStorage'ında.
- * İki mod da aynı arayüzü sunar; ELO hesabı her iki durumda elo.js ile yapılır.
+ *  - Ayarlı değilse: veriler yalnızca bu tarayıcının localStorage'ında.
+ * İki mod da aynı arayüzü sunar; puan hesabı her iki durumda elo.js ile yapılır.
+ *
+ * Maç: { a, b, a2?, b2?, result: 'A'|'B' }  (a2/b2 sadece 2v2'de)
  */
 (function () {
   'use strict';
@@ -53,7 +55,7 @@
         if (rows.length < 1000) return out;
       }
     }
-    const num = (v) => (v == null ? v : Number(v));
+    const num = (v) => (v == null ? null : Number(v));
 
     return {
       mode: 'remote',
@@ -63,7 +65,7 @@
       async load() {
         const [players, matches, adjustments] = await Promise.all([
           all('players', 'id,name,created_at'),
-          all('matches', 'id,player_a,player_b,score_a,score_b,result,played_at'),
+          all('matches', 'id,player_a,player_b,player_a2,player_b2,result,played_at'),
           all('adjustments', 'id,player_id,amount,reason,created_at'),
         ]);
         return {
@@ -73,6 +75,8 @@
             id: num(m.id),
             player_a: num(m.player_a),
             player_b: num(m.player_b),
+            player_a2: num(m.player_a2),
+            player_b2: num(m.player_b2),
             played_at: num(m.played_at),
           })),
           adjustments: adjustments.map((a) => ({
@@ -84,10 +88,12 @@
         };
       },
       async addMatch(m) {
-        return Number(
-          await rpc('zz_add_match', { p_a: m.playerA, p_b: m.playerB, p_result: m.result, p_score_a: m.scoreA, p_score_b: m.scoreB })
-        );
+        const id = m.a2
+          ? await rpc('zz_add_team_match', { p_a: m.a, p_a2: m.a2, p_b: m.b, p_b2: m.b2, p_result: m.result })
+          : await rpc('zz_add_match', { p_a: m.a, p_b: m.b, p_result: m.result });
+        return Number(id);
       },
+      addPlayer: (name) => rpc('zz_add_player', { p_name: name }),
       async login(code) {
         const r = await rpc('zz_admin_login', { p_code: normCode(code) });
         if (!r || !r.ok) throw new StoreError((r && r.error) || 'Giriş başarısız.');
@@ -99,28 +105,18 @@
         const rows = await rpc('zz_admin_log', { p_token: t });
         return rows.map((r) => ({ ...r, created_at: num(r.created_at) }));
       },
-      addPlayer: (name) => rpc('zz_add_player', { p_name: name }),
       renamePlayer: (t, id, name) => rpc('zz_admin_rename_player', { p_token: t, p_id: id, p_name: name }),
       deletePlayer: (t, id, rating) => rpc('zz_admin_delete_player', { p_token: t, p_id: id, p_rating: rating }),
       adjust: (t, id, amount, reason, before) =>
         rpc('zz_admin_adjust', { p_token: t, p_player: id, p_amount: amount, p_reason: reason, p_before: before }),
-      editMatch: (t, id, m) =>
-        rpc('zz_admin_edit_match', {
-          p_token: t,
-          p_id: id,
-          p_a: m.playerA,
-          p_b: m.playerB,
-          p_result: m.result,
-          p_score_a: m.scoreA,
-          p_score_b: m.scoreB,
-        }),
+      flipMatch: (t, id) => rpc('zz_admin_flip_match', { p_token: t, p_id: id }),
       deleteMatch: (t, id) => rpc('zz_admin_delete_match', { p_token: t, p_id: id }),
       subscribe() {}, // yoklama (polling) app.js'de
     };
   }
 
   // ===================================================================
-  // Demo modu (yalnızca bu tarayıcı)
+  // Yerel mod (yalnızca bu tarayıcı)
   // ===================================================================
   function createLocal() {
     const KEY = 'zirzir_demo_v1';
@@ -148,6 +144,11 @@
     const now = () => (last = Math.max(Date.now(), last + 1));
     const nextId = (db) => ++db.seq;
     const audit = (db, action, details) => db.audit.push({ id: nextId(db), action, details, created_at: now() });
+    const names = (db, ids) =>
+      ids
+        .filter((x) => x != null)
+        .map((id) => db.players.find((p) => p.id === id)?.name)
+        .join(' & ');
 
     function cleanName(raw) {
       const n = String(raw ?? '').normalize('NFC').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
@@ -155,23 +156,6 @@
       return n;
     }
     const key = (n) => n.toLocaleLowerCase('tr-TR');
-    function checkMatch(db, m) {
-      const { playerA: a, playerB: b, scoreA: sa, scoreB: sb } = m;
-      if (!a || !b) throw new StoreError('İki oyuncuyu da seç.');
-      if (a === b) throw new StoreError('Bir oyuncu kendisiyle maç yapamaz.');
-      if (!db.players.some((p) => p.id === a) || !db.players.some((p) => p.id === b)) throw new StoreError('Oyuncu bulunamadı.');
-      if ((sa == null) !== (sb == null)) throw new StoreError('Skor girilecekse iki taraf da girilmeli.');
-      let fromScore = null;
-      if (sa != null) {
-        if (![sa, sb].every((s) => Number.isInteger(s) && s >= 0 && s <= 99)) throw new StoreError('Skor 0-99 arası bir tam sayı olmalı.');
-        fromScore = sa > sb ? 'A' : sa < sb ? 'B' : 'D';
-      }
-      const r = m.result || fromScore;
-      if (!r) throw new StoreError('Kazananı seç.');
-      if (!['A', 'B', 'D'].includes(r)) throw new StoreError('Geçersiz sonuç.');
-      if (fromScore && fromScore !== r) throw new StoreError('Skor ile seçilen sonuç uyuşmuyor.');
-      return r;
-    }
     function requireAdmin(db, token) {
       if (!db.sessions.some((s) => s.token === token && s.expires > Date.now())) throw new StoreError('Yönetici yetkisi gerekli.', true);
     }
@@ -210,13 +194,36 @@
       },
       async addMatch(m) {
         return tx((db) => {
-          const r = checkMatch(db, m);
+          const a2 = m.a2 ?? null;
+          const b2 = m.b2 ?? null;
+          if ((a2 == null) !== (b2 == null)) throw new StoreError("Takımlar 2'şer kişi olmalı.");
+          const ids = [m.a, a2, m.b, b2].filter((x) => x != null);
+          if (!m.a || !m.b) throw new StoreError('Oyuncuları seç.');
+          if (new Set(ids).size !== ids.length) throw new StoreError('Aynı oyuncu iki kere seçilemez.');
+          ids.forEach((id) => player(db, id));
+          if (m.result !== 'A' && m.result !== 'B') throw new StoreError('Kazananı seç.');
           const t = now();
-          if (db.matches.some((x) => x.player_a === m.playerA && x.player_b === m.playerB && x.result === r && x.played_at > t - 15000)) {
+          if (
+            db.matches.some(
+              (x) =>
+                x.player_a === m.a && x.player_b === m.b && x.player_a2 === a2 && x.player_b2 === b2 &&
+                x.result === m.result && x.played_at > t - 15000
+            )
+          ) {
             throw new StoreError('Bu maç az önce kaydedildi. İki kere basmış olabilirsin.');
           }
           const id = nextId(db);
-          db.matches.push({ id, player_a: m.playerA, player_b: m.playerB, score_a: m.scoreA, score_b: m.scoreB, result: r, played_at: t });
+          db.matches.push({ id, player_a: m.a, player_a2: a2, player_b: m.b, player_b2: b2, result: m.result, played_at: t });
+          return id;
+        });
+      },
+      async addPlayer(name) {
+        return tx((db) => {
+          const n = cleanName(name);
+          if (db.players.some((p) => key(p.name) === key(n))) throw new StoreError('Bu isimde bir oyuncu zaten var.');
+          const id = nextId(db);
+          db.players.push({ id, name: n, created_at: now() });
+          audit(db, 'player_add', { playerId: id, name: n });
           return id;
         });
       },
@@ -249,16 +256,6 @@
         requireAdmin(db, t);
         return [...db.audit].reverse().slice(0, 300);
       },
-      async addPlayer(name) {
-        return tx((db) => {
-          const n = cleanName(name);
-          if (db.players.some((p) => key(p.name) === key(n))) throw new StoreError('Bu isimde bir oyuncu zaten var.');
-          const id = nextId(db);
-          db.players.push({ id, name: n, created_at: now() });
-          audit(db, 'player_add', { playerId: id, name: n });
-          return id;
-        });
-      },
       async renamePlayer(t, id, name) {
         tx((db) => {
           requireAdmin(db, t);
@@ -274,7 +271,7 @@
           requireAdmin(db, t);
           const p = player(db, id);
           const before = db.matches.length;
-          db.matches = db.matches.filter((m) => m.player_a !== id && m.player_b !== id);
+          db.matches = db.matches.filter((m) => ![m.player_a, m.player_b, m.player_a2, m.player_b2].includes(id));
           db.adjustments = db.adjustments.filter((a) => a.player_id !== id);
           db.players = db.players.filter((x) => x.id !== id);
           audit(db, 'player_delete', { playerId: id, name: p.name, rating, matchesRemoved: before - db.matches.length });
@@ -293,29 +290,32 @@
           audit(db, 'elo_adjust', { adjustmentId: adjId, playerId: id, name: p.name, amount, reason: r, before });
         });
       },
-      async editMatch(t, id, m) {
+      async flipMatch(t, id) {
         tx((db) => {
           requireAdmin(db, t);
-          const old = db.matches.find((x) => x.id === id);
-          if (!old) throw new StoreError('Maç bulunamadı.');
-          const r = checkMatch(db, m);
-          const nm = (pid) => db.players.find((p) => p.id === pid)?.name;
-          audit(db, 'match_edit', {
+          const m = db.matches.find((x) => x.id === id);
+          if (!m) throw new StoreError('Maç bulunamadı.');
+          m.result = m.result === 'A' ? 'B' : 'A';
+          audit(db, 'match_flip', {
             matchId: id,
-            before: { ...old, name_a: nm(old.player_a), name_b: nm(old.player_b) },
-            after: { playerA: m.playerA, playerB: m.playerB, scoreA: m.scoreA, scoreB: m.scoreB, result: r },
+            teamA: names(db, [m.player_a, m.player_a2]),
+            teamB: names(db, [m.player_b, m.player_b2]),
+            newWinner: m.result,
           });
-          Object.assign(old, { player_a: m.playerA, player_b: m.playerB, score_a: m.scoreA, score_b: m.scoreB, result: r });
         });
       },
       async deleteMatch(t, id) {
         tx((db) => {
           requireAdmin(db, t);
-          const old = db.matches.find((x) => x.id === id);
-          if (!old) throw new StoreError('Maç bulunamadı.');
-          const nm = (pid) => db.players.find((p) => p.id === pid)?.name;
+          const m = db.matches.find((x) => x.id === id);
+          if (!m) throw new StoreError('Maç bulunamadı.');
           db.matches = db.matches.filter((x) => x.id !== id);
-          audit(db, 'match_delete', { matchId: id, match: { ...old, name_a: nm(old.player_a), name_b: nm(old.player_b) } });
+          audit(db, 'match_delete', {
+            matchId: id,
+            teamA: names(db, [m.player_a, m.player_a2]),
+            teamB: names(db, [m.player_b, m.player_b2]),
+            result: m.result,
+          });
         });
       },
       // Diğer sekmelerdeki değişiklikleri anında yakala
