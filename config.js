@@ -16,6 +16,6 @@
  * "service_role" anahtarını ASLA buraya koyma.
  */
 window.ZIR_CONFIG = {
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://zcrapbcrtvvfhfmeoijh.supabase.co',
+  supabaseAnonKey: 'sb_publishable_575ZX3de1C8DQcYWZzhZuQ_4cjGMv0O',
 };
