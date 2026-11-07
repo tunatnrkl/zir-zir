@@ -24,7 +24,10 @@
   // ===================================================================
   function createRemote(url, key) {
     const base = url.replace(/\/+$/, '') + '/rest/v1/';
-    const headers = { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+    // Yeni anahtarlar (sb_publishable_ / sb_secret_) JWT değildir; yalnızca apikey başlığı yeterli.
+    // Eski anon anahtarı (eyJ...) için Authorization başlığı da gönderilir.
+    const headers = { apikey: key, 'Content-Type': 'application/json' };
+    if (key.startsWith('eyJ')) headers.Authorization = `Bearer ${key}`;
 
     async function req(path, opts = {}) {
       let res;
