@@ -118,11 +118,28 @@
   });
 
   // ---------- maç ekleme ----------
+  // Maç eklemek yalnızca yönetici kodu olanlar içindir.
+  function gate(next) {
+    S.pending = next;
+    openModal(
+      'gate',
+      `<h2>Yönetici Kodu</h2>
+      <p class="muted">Maç sonucu girmek için yönetici kodu gerekli.</p>
+      <form class="row" id="f-gate" autocomplete="off">
+        <input type="password" id="gate-code" placeholder="Yönetici kodu" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        <button class="btn btn-primary" type="submit">Giriş</button>
+      </form>
+      <p class="msg" id="m-gate"></p>`
+    );
+    setTimeout(() => $('#gate-code') && $('#gate-code').focus(), 50);
+  }
   function openMatch(firstId = null) {
+    if (!S.token) return gate(() => openMatch(firstId));
     S.flow = { mode: 'solo', a: firstId, b: null, teamA: [], teamB: [] };
     renderFlow();
   }
   function openTeamMatch() {
+    if (!S.token) return gate(() => openTeamMatch());
     S.flow = { mode: 'team', a: null, b: null, teamA: [], teamB: [] };
     renderFlow();
   }
@@ -197,12 +214,13 @@
     const buttons = document.querySelectorAll('[data-win]');
     buttons.forEach((x) => (x.disabled = true));
     try {
-      const id = await Store.addMatch(m);
+      const id = await admin((t) => Store.addMatch(t, m));
       await load(true);
       modal.close();
       const saved = S.matches.find((x) => x.id === id);
       if (saved) matchToast(saved);
     } catch (err) {
+      if (err.auth) return gate(() => renderFlow()); // oturum süresi dolmuş: yeniden giriş, seçimler korunur
       setMsg('#m-match', err.message);
       buttons.forEach((x) => (x.disabled = false));
     }
@@ -455,7 +473,7 @@
   modal.addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = e.target;
-    const msgId = { 'f-player': '#m-player', 'f-login': '#m-login', 'f-adjust': '#m-adjust' }[f.id];
+    const msgId = { 'f-player': '#m-player', 'f-login': '#m-login', 'f-adjust': '#m-adjust', 'f-gate': '#m-gate' }[f.id];
     try {
       if (f.id === 'f-player') {
         const name = $('#new-player').value;
@@ -464,6 +482,11 @@
         setMsg(msgId, `${name.trim()} lige katıldı. ${Elo.START_RATING} ELO ile başlıyor.`, true);
         await load(true);
         if (S.token) loadLog();
+      } else if (f.id === 'f-gate') {
+        setToken(await Store.login($('#gate-code').value));
+        const next = S.pending;
+        S.pending = null;
+        if (next) next();
       } else if (f.id === 'f-login') {
         setToken(await Store.login($('#admin-code').value));
       } else if (f.id === 'f-adjust') {

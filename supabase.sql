@@ -166,18 +166,9 @@ create or replace function public.zz_version() returns bigint
 language sql stable security definer set search_path = public as
 $$ select version from public.app_meta where id = 1 $$;
 
-create or replace function public.zz_add_match(p_a bigint, p_b bigint, p_result text) returns bigint
-language sql security definer set search_path = public as
-$$ select public.zz_insert_match(p_a, null, p_b, null, p_result) $$;
-
-create or replace function public.zz_add_team_match(
-  p_a bigint, p_a2 bigint, p_b bigint, p_b2 bigint, p_result text
-) returns bigint
-language plpgsql security definer set search_path = public as $$
-begin
-  if p_a2 is null or p_b2 is null then raise exception 'Takımlar 2''şer kişi olmalı.'; end if;
-  return public.zz_insert_match(p_a, p_a2, p_b, p_b2, p_result);
-end $$;
+-- Maç eklemek yalnızca yönetici içindir (eski herkese açık sürümler kaldırılır).
+drop function if exists public.zz_add_match(bigint, bigint, text);
+drop function if exists public.zz_add_team_match(bigint, bigint, bigint, bigint, text);
 
 create or replace function public.zz_add_player(p_name text) returns bigint
 language plpgsql security definer set search_path = public as $$
@@ -229,6 +220,23 @@ begin
 end $$;
 
 -- ---------- Yönetici fonksiyonları ----------
+create or replace function public.zz_admin_add_match(p_token text, p_a bigint, p_b bigint, p_result text) returns bigint
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.zz_require_admin(p_token);
+  return public.zz_insert_match(p_a, null, p_b, null, p_result);
+end $$;
+
+create or replace function public.zz_admin_add_team_match(
+  p_token text, p_a bigint, p_a2 bigint, p_b bigint, p_b2 bigint, p_result text
+) returns bigint
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.zz_require_admin(p_token);
+  if p_a2 is null or p_b2 is null then raise exception 'Takımlar 2''şer kişi olmalı.'; end if;
+  return public.zz_insert_match(p_a, p_a2, p_b, p_b2, p_result);
+end $$;
+
 create or replace function public.zz_admin_check(p_token text) returns boolean
 language plpgsql security definer set search_path = public as $$
 begin perform public.zz_require_admin(p_token); return true; end $$;
@@ -335,16 +343,18 @@ revoke execute on function
 
 -- Dışarıya açık olanlar (yönetici olanlar zaten token ister)
 revoke execute on function
-  public.zz_version(), public.zz_add_match(bigint, bigint, text),
-  public.zz_add_team_match(bigint, bigint, bigint, bigint, text), public.zz_add_player(text),
+  public.zz_version(), public.zz_add_player(text),
+  public.zz_admin_add_match(text, bigint, bigint, text),
+  public.zz_admin_add_team_match(text, bigint, bigint, bigint, bigint, text),
   public.zz_admin_login(text), public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
   public.zz_admin_rename_player(text, bigint, text), public.zz_admin_delete_player(text, bigint, int),
   public.zz_admin_adjust(text, bigint, int, text, int), public.zz_admin_flip_match(text, bigint),
   public.zz_admin_delete_match(text, bigint)
   from public;
 grant execute on function
-  public.zz_version(), public.zz_add_match(bigint, bigint, text),
-  public.zz_add_team_match(bigint, bigint, bigint, bigint, text), public.zz_add_player(text),
+  public.zz_version(), public.zz_add_player(text),
+  public.zz_admin_add_match(text, bigint, bigint, text),
+  public.zz_admin_add_team_match(text, bigint, bigint, bigint, bigint, text),
   public.zz_admin_login(text), public.zz_admin_check(text), public.zz_admin_logout(text), public.zz_admin_log(text),
   public.zz_admin_rename_player(text, bigint, text), public.zz_admin_delete_player(text, bigint, int),
   public.zz_admin_adjust(text, bigint, int, text, int), public.zz_admin_flip_match(text, bigint),

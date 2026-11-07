@@ -4,7 +4,7 @@
  *  - Ayarlı değilse: veriler yalnızca bu tarayıcının localStorage'ında.
  * İki mod da aynı arayüzü sunar; puan hesabı her iki durumda elo.js ile yapılır.
  *
- * Maç: { a, b, a2?, b2?, result: 'A'|'B' }  (a2/b2 sadece 2v2'de)
+ * Maç: { a, b, a2?, b2?, result: 'A'|'B' }  (a2/b2 sadece 2v2'de). Maç eklemek yönetici oturumu ister.
  */
 (function () {
   'use strict';
@@ -90,10 +90,10 @@
           })),
         };
       },
-      async addMatch(m) {
+      async addMatch(t, m) {
         const id = m.a2
-          ? await rpc('zz_add_team_match', { p_a: m.a, p_a2: m.a2, p_b: m.b, p_b2: m.b2, p_result: m.result })
-          : await rpc('zz_add_match', { p_a: m.a, p_b: m.b, p_result: m.result });
+          ? await rpc('zz_admin_add_team_match', { p_token: t, p_a: m.a, p_a2: m.a2, p_b: m.b, p_b2: m.b2, p_result: m.result })
+          : await rpc('zz_admin_add_match', { p_token: t, p_a: m.a, p_b: m.b, p_result: m.result });
         return Number(id);
       },
       addPlayer: (name) => rpc('zz_add_player', { p_name: name }),
@@ -195,8 +195,9 @@
         const db = read();
         return { players: db.players, matches: db.matches, adjustments: db.adjustments };
       },
-      async addMatch(m) {
+      async addMatch(token, m) {
         return tx((db) => {
+          requireAdmin(db, token);
           const a2 = m.a2 ?? null;
           const b2 = m.b2 ?? null;
           if ((a2 == null) !== (b2 == null)) throw new StoreError("Takımlar 2'şer kişi olmalı.");
