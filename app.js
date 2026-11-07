@@ -256,6 +256,9 @@
       <h3>2v2 Takım Maçı</h3>
       <button class="btn btn-ghost" id="open-team">2v2 maç ekle</button>
 
+      <h3>Kafa Kafaya (1v1)</h3>
+      <ul class="list" id="h2h"></ul>
+
       <h3>Maç Geçmişi</h3>
       <select id="hist-filter" aria-label="Oyuncuya göre filtrele"></select>
       <ul class="list" id="history"></ul>
@@ -319,6 +322,35 @@
             })
             .join('')
         : '<li class="empty">Henüz maç yok.</li>';
+    }
+
+    const h2h = $('#h2h');
+    if (h2h) {
+      // Her oyuncu çifti için tekli maçlardaki galibiyetler
+      const pairs = new Map();
+      for (const m of S.matches) {
+        if (m.team || m.a.length !== 1 || m.b.length !== 1) continue;
+        const [pa, pb] = [m.a[0], m.b[0]];
+        const key = [pa.id, pb.id].sort((x, y) => x - y).join('-');
+        if (!pairs.has(key)) pairs.set(key, { p: [pa, pb], wins: new Map([[pa.id, 0], [pb.id, 0]]), total: 0 });
+        const rec = pairs.get(key);
+        rec.total++;
+        const winner = m.result === 'A' ? pa.id : pb.id;
+        rec.wins.set(winner, rec.wins.get(winner) + 1);
+      }
+      const rows = [...pairs.values()].sort((x, y) => y.total - x.total);
+      h2h.innerHTML = rows.length
+        ? rows
+            .map((r) => {
+              const [x, y] = r.p;
+              const wx = r.wins.get(x.id);
+              const wy = r.wins.get(y.id);
+              const lead = wx === wy ? '' : wx > wy ? 'd-up' : 'd-down';
+              const cls = (n) => (n === 0 ? 'muted' : lead);
+              return `<li><span class="grow"><b>${esc(x.name)}</b> <span class="${cls(wx)}">${wx}</span> – <span class="${cls(wy)}">${wy}</span> <b>${esc(y.name)}</b></span><span class="when">${r.total} maç</span></li>`;
+            })
+            .join('')
+        : '<li class="empty">Henüz tekli maç yok.</li>';
     }
 
     const adj = $('#adj-player');
