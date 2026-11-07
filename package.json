@@ -1,15 +1,9 @@
 {
   "name": "zir-zir",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "ZIR ZIR – FC 27 arkadaş grubu ELO sıralaması",
-  "main": "server.js",
-  "engines": {
-    "node": ">=22.13"
-  },
+  "description": "ZIR ZIR – FC 27 arkadaş grubu ELO sıralaması (GitHub Pages + Supabase)",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "test": "node --test test/*.test.js"
   }
 }

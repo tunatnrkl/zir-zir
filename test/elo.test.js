@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const elo = require('../src/elo');
+const elo = require('../elo');
 
 const P = (id, t = 0) => ({ id, name: `P${id}`, created_at: t });
 

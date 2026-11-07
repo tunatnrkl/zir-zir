@@ -83,6 +83,10 @@ button, input, select { font: inherit; color: inherit; }
 .live.off .live-dot { background: var(--muted); box-shadow: none; animation: none; }
 @keyframes pulse { 50% { opacity: .35; } }
 
+/* ---------- Demo bandı ---------- */
+.banner { position: relative; z-index: 1; max-width: 1240px; margin: 14px auto 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; color: #ffe7a3; background: rgba(255,204,77,.08); border: 1px solid rgba(255,204,77,.35); width: calc(100% - 2 * clamp(16px, 4vw, 40px)); }
+.banner code { color: var(--draw); }
+
 /* ---------- Genel ---------- */
 main { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 40px) 40px; }
 .view { animation: viewIn .35s ease; }

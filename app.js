@@ -65,57 +65,67 @@
   }
   const isDomination = (m) => m.score_a != null && m.score_b != null && Math.abs(m.score_a - m.score_b) >= 3;
 
-  // ---------- API ----------
-  async function api(path, { method = 'GET', body, auth = false } = {}) {
-    const headers = {};
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (auth && S.token) headers.Authorization = `Bearer ${S.token}`;
-    const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-    let data = {};
-    try {
-      data = await res.json();
-    } catch {}
-    if (res.status === 401 && auth) setAdmin(null);
-    if (!res.ok) throw new Error(data.error || 'Bir şeyler ters gitti.');
-    return data;
-  }
+  // ---------- Veri ----------
+  const Store = window.ZirStore;
 
-  async function loadState() {
+  /** Yönetici işlemi: oturum düşmüşse paneli kapatır. */
+  async function admin(fn) {
     try {
-      const st = await api('/api/state');
-      if (st.version === S.state.version && S.byId.size) return;
-      S.state = st;
-      S.byId = new Map(st.players.map((p) => [p.id, p]));
-      render();
+      return await fn(S.token);
     } catch (e) {
-      console.warn(e);
+      if (e.auth) setAdmin(null);
+      throw e;
     }
   }
 
-  // ---------- canlı güncelleme (SSE + yedek yoklama) ----------
-  function connectLive() {
-    const live = $('#live');
-    const text = $('#live-text');
-    const setLive = (on) => {
-      live.classList.toggle('off', !on);
-      text.textContent = on ? 'CANLI' : 'BAĞLANIYOR';
-    };
-    if (!('EventSource' in window)) {
-      setLive(false);
-      return;
-    }
-    const es = new EventSource('/api/events');
-    es.addEventListener('update', (ev) => {
-      setLive(true);
-      if (Number(ev.data) !== S.state.version) loadState();
-    });
-    es.onopen = () => setLive(true);
-    es.onerror = () => setLive(false);
+  function setLive(on) {
+    const demo = Store.mode === 'local';
+    $('#live').classList.toggle('off', !on || demo);
+    $('#live-text').textContent = demo ? 'DEMO' : on ? 'CANLI' : 'BAĞLANIYOR';
   }
-  setInterval(loadState, 30000);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) loadState();
-  });
+
+  // Ham veriden (oyuncular, maçlar, düzeltmeler) sıralamayı hesaplar.
+  let loading = null;
+  function loadState(force = false) {
+    if (loading) return force ? loading.then(() => loadState(true)) : loading;
+    loading = (async () => {
+      try {
+        const v = await Store.version();
+        if (!force && S.loaded && v === S.state.version) return setLive(true);
+        const raw = await Store.load();
+        const r = Elo.replay(raw.players, raw.matches, raw.adjustments);
+        S.state = {
+          version: v,
+          target: Elo.TARGET_AVERAGE,
+          start: Elo.START_RATING,
+          average: r.average,
+          players: r.players,
+          matches: r.matches,
+        };
+        S.loaded = true;
+        S.byId = new Map(r.players.map((p) => [p.id, p]));
+        render();
+        setLive(true);
+      } catch (e) {
+        console.warn(e);
+        setLive(false);
+      }
+    })().finally(() => {
+      loading = null;
+    });
+    return loading;
+  }
+
+  // ---------- canlı güncelleme: birkaç saniyede bir sürüm kontrolü ----------
+  function connectLive() {
+    Store.subscribe(() => loadState());
+    setInterval(() => {
+      if (!document.hidden) loadState();
+    }, Store.mode === 'remote' ? 4000 : 15000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) loadState();
+    });
+  }
 
   // ---------- render ----------
   function render() {
@@ -365,17 +375,15 @@
     const btn = $('#save-match');
     btn.disabled = true;
     try {
-      const { match } = await api('/api/matches', {
-        method: 'POST',
-        body: { playerA, playerB, result: S.result, scoreA: sa, scoreB: sb },
-      });
-      S.freshMatchId = match ? match.id : null;
+      const id = await Store.addMatch({ playerA, playerB, result: S.result, scoreA: sa, scoreB: sb });
+      S.freshMatchId = id;
       $('#score-a').value = '';
       $('#score-b').value = '';
       setResult(null);
       msg.className = 'form-msg ok';
       msg.textContent = 'Kaydedildi! Puanlar güncellendi.';
-      await loadState();
+      await loadState(true);
+      const match = S.state.matches.find((m) => m.id === id);
       if (match) matchToast(match);
     } catch (err) {
       fail(err.message);
@@ -532,7 +540,7 @@
     msg.className = 'form-msg';
     msg.textContent = '';
     try {
-      const { token } = await api('/api/admin/login', { method: 'POST', body: { code: $('#admin-code').value } });
+      const token = await Store.login($('#admin-code').value);
       $('#admin-code').value = '';
       setAdmin(token);
       toast({ title: 'Yönetici paneli açıldı', lines: ['Güç sende. Adil kullan.'] });
@@ -544,7 +552,7 @@
 
   $('#logout').addEventListener('click', async () => {
     try {
-      await api('/api/admin/logout', { method: 'POST', auth: true });
+      await Store.logout(S.token);
     } catch {}
     setAdmin(null);
   });
@@ -582,7 +590,7 @@
 
   async function loadLog() {
     try {
-      const { audit } = await api('/api/admin/log', { auth: true });
+      const audit = await admin((t) => Store.log(t));
       $('#admin-log').innerHTML = audit.length
         ? audit
             .map((r) => {
@@ -616,16 +624,13 @@
       return;
     }
     try {
-      const r = await api('/api/admin/adjust', {
-        method: 'POST',
-        auth: true,
-        body: { playerId, amount, reason: $('#adj-reason').value },
-      });
-      msg.className = 'form-msg ok';
-      msg.textContent = `${p.name}: ${signed(amount)} ELO uygulandı → ${r.player ? r.player.rating : '?'}`;
+      if (!Number.isInteger(amount) || amount === 0) throw new Error('Geçerli bir miktar gir (ör. 50 veya -100).');
+      await admin((t) => Store.adjust(t, playerId, amount, $('#adj-reason').value, p.rating));
       $('#adj-amount').value = '';
       $('#adj-reason').value = '';
-      await loadState();
+      await loadState(true);
+      msg.className = 'form-msg ok';
+      msg.textContent = `${p.name}: ${signed(amount)} ELO uygulandı → ${S.byId.get(playerId)?.rating ?? '?'}`;
       loadLog();
     } catch (err) {
       msg.className = 'form-msg err';
@@ -638,11 +643,11 @@
     const msg = $('#player-msg');
     const name = $('#new-player').value;
     try {
-      await api('/api/admin/players', { method: 'POST', auth: true, body: { name } });
+      await admin((t) => Store.addPlayer(t, name));
       msg.className = 'form-msg ok';
       msg.textContent = `${name.trim()} lige katıldı. 1000 ELO ile başlıyor.`;
       $('#new-player').value = '';
-      await loadState();
+      await loadState(true);
       loadLog();
     } catch (err) {
       msg.className = 'form-msg err';
@@ -659,16 +664,16 @@
         const p = S.byId.get(Number(ren.dataset.rename));
         const name = prompt('Yeni ad:', p?.name || '');
         if (!name) return;
-        await api(`/api/admin/players/${p.id}`, { method: 'PATCH', auth: true, body: { name } });
+        await admin((t) => Store.renamePlayer(t, p.id, name));
       } else if (del) {
         const p = S.byId.get(Number(del.dataset.delPlayer));
         if (!p) return;
         if (!confirm(`${p.name} silinsin mi?\n\nOyuncunun ${p.games} maçı da silinir ve bütün sıralama yeniden hesaplanır. Bu işlem geri alınamaz.`)) return;
-        await api(`/api/admin/players/${p.id}`, { method: 'DELETE', auth: true });
+        await admin((t) => Store.deletePlayer(t, p.id, p.rating));
         msg.className = 'form-msg ok';
         msg.textContent = `${p.name} silindi.`;
       } else return;
-      await loadState();
+      await loadState(true);
       loadLog();
     } catch (err) {
       msg.className = 'form-msg err';
@@ -706,20 +711,18 @@
       const sa = $('#ed-sa').value.trim();
       const sb = $('#ed-sb').value.trim();
       try {
-        await api(`/api/admin/matches/${id}`, {
-          method: 'PUT',
-          auth: true,
-          body: {
+        await admin((t) =>
+          Store.editMatch(t, id, {
             playerA: Number($('#ed-a').value),
             playerB: Number($('#ed-b').value),
             scoreA: sa === '' ? null : Number(sa),
             scoreB: sb === '' ? null : Number(sb),
             result: $('#ed-r').value,
-          },
-        });
+          })
+        );
         modal.close();
         toast({ title: 'Maç düzeltildi', lines: ['Sıralama yeniden hesaplandı.'] });
-        await loadState();
+        await loadState(true);
         loadLog();
       } catch (err) {
         $('#ed-msg').className = 'form-msg err';
@@ -733,10 +736,10 @@
     if (!m || !S.isAdmin) return;
     if (!confirm(`${m.name_a} vs ${m.name_b} maçı silinsin mi?\nPuanlar yeniden hesaplanır.`)) return;
     try {
-      await api(`/api/admin/matches/${id}`, { method: 'DELETE', auth: true });
+      await admin((t) => Store.deleteMatch(t, id));
       if (modal.open) modal.close();
       toast({ title: 'Maç silindi', lines: ['Sıralama yeniden hesaplandı.'] });
-      await loadState();
+      await loadState(true);
       loadLog();
     } catch (err) {
       toast({ title: 'Silinemedi', lines: [err.message], error: true });
@@ -744,6 +747,7 @@
   }
 
   // ---------- Başlangıç ----------
+  $('#demo-banner').hidden = Store.mode !== 'local';
   show(location.hash.slice(1) || 'siralama');
   let saved = null;
   try {
@@ -753,7 +757,7 @@
     if (saved) {
       S.token = saved;
       try {
-        await api('/api/admin/check', { auth: true });
+        await Store.check(saved);
         setAdmin(saved);
       } catch {
         setAdmin(null);
