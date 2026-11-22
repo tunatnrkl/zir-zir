@@ -171,3 +171,9 @@ input:focus, select:focus { border-color: var(--neon); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Henüz maç yapmamış oyuncular (sıralama dışı) */
+.table tr.unranked td { background: transparent; border-top-style: dashed; border-bottom-style: dashed; }
+.table tr.unranked td:first-child { border-left-style: dashed; }
+.table tr.unranked td:last-child { border-right-style: dashed; }
+.table tr.unranked .name { color: var(--muted); font-weight: 600; }

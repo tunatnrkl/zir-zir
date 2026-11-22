@@ -84,14 +84,21 @@
     $('#empty').hidden = S.players.length > 0;
     $('#leaderboard').hidden = S.players.length === 0;
     $('#leaderboard tbody').innerHTML = S.players
-      .map(
-        (p, i) => `<tr class="${i < 3 ? `top${i + 1}` : ''}" data-player="${p.id}">
+      .map((p) =>
+        p.rank == null
+          ? // Hiç maç yapmamış: sıralamaya dahil değil, en altta
+            `<tr class="unranked" data-player="${p.id}">
+          <td class="c"><span class="rank">–</span></td>
+          <td><span class="name">${esc(p.name)}</span></td>
+          <td class="r muted small" colspan="4">Henüz maç yapmadı</td>
+        </tr>`
+          : `<tr class="${p.rank <= 3 ? `top${p.rank}` : ''}" data-player="${p.id}">
           <td class="c"><span class="rank">${p.rank}</span></td>
           <td><span class="name">${esc(p.name)}</span></td>
           <td class="r"><span class="elo">${p.rating}</span></td>
           <td class="c w">${p.wins}</td>
           <td class="c l">${p.losses}</td>
-          <td class="r">${p.games ? Math.round(p.winRate) : '–'}</td>
+          <td class="r">${Math.round(p.winRate)}</td>
         </tr>`
       )
       .join('');

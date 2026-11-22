@@ -165,11 +165,17 @@
       }
     }
 
-    const list = [...stats.values()].sort(
-      (x, y) => y.rating - x.rating || y.wins - x.wins || x.games - y.games || x.id - y.id
-    );
-    list.forEach((s, i) => {
-      s.rank = i + 1;
+    // Maç yapanlar puana göre sıralanır; hiç maç yapmayanlar sıralamaya girmez,
+    // listenin sonunda isim sırasıyla durur (rank = null).
+    const all = [...stats.values()];
+    const ranked = all
+      .filter((s) => s.games > 0)
+      .sort((x, y) => y.rating - x.rating || y.wins - x.wins || x.games - y.games || x.id - y.id);
+    const unranked = all.filter((s) => s.games === 0).sort((x, y) => x.name.localeCompare(y.name, 'tr') || x.id - y.id);
+    ranked.forEach((s, i) => (s.rank = i + 1));
+    unranked.forEach((s) => (s.rank = null));
+    const list = [...ranked, ...unranked];
+    list.forEach((s) => {
       s.winRate = s.games ? Math.round((s.wins / s.games) * 1000) / 10 : 0;
     });
 

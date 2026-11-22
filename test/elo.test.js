@@ -117,3 +117,13 @@ test('tekrar oynatma deterministik (sıra bağımsız)', () => {
   ];
   assert.deepEqual(elo.replay(players, ms, []).players, elo.replay(players, [...ms].reverse(), []).players);
 });
+
+test('hiç maç yapmayanlar sıralamaya girmez, listenin sonunda durur', () => {
+  const s = elo.replay(
+    [P(1), P(2), P(3), P(4)],
+    [{ id: 1, player_a: 2, player_b: 3, result: 'B', played_at: T + 10 }],
+    [{ id: 1, player_id: 1, amount: 500, reason: '', created_at: T + 5 }]
+  );
+  assert.deepEqual(s.players.map((p) => p.id), [3, 2, 1, 4]);
+  assert.deepEqual(s.players.map((p) => p.rank), [1, 2, null, null]);
+});
