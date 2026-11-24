@@ -141,7 +141,7 @@ test('galibiyet serisi, en uzun seri ve son maç değişimi tutulur', () => {
 });
 
 // ---------- v2 kuralları (V2_FROM sonrası) ----------
-const T2 = elo.V2_FROM + DAY;
+const T2 = elo.V2_FROM + 60000; // v2 dönemi (v3'ten önce)
 const pl2 = (r, rd = 150) => ({ r, rd, last: T2 });
 
 test('v2: oturmuş eşit oyuncular arasında değişim ~±25 (ortalama hedefteyken)', () => {
@@ -155,8 +155,8 @@ test('v2: ortalama 1600 altındayken kazanana lig bonusu, kaybedene yok', () => 
   const low = elo.computeGame([pl2(1000)], [pl2(1000)], 'A', T2, 1000);
   assert.equal(low.a[0].delta - at.a[0].delta, 15); // açık 600 → +15 (tavan)
   assert.equal(low.b[0].delta, at.b[0].delta);
-  assert.equal(elo.leagueBonus(1600), 0);
-  assert.equal(elo.leagueBonus(1700), 0);
+  assert.equal(elo.leagueBonus(1600, elo.V2), 0);
+  assert.equal(elo.leagueBonus(1700, elo.V2), 0);
 });
 
 test('v2: 2400 üstünde kazanç azalır, kayıp azalmaz', () => {
@@ -164,8 +164,8 @@ test('v2: 2400 üstünde kazanç azalır, kayıp azalmaz', () => {
   const top = elo.computeGame([pl2(2900)], [pl2(2900)], 'A', T2, 1600);
   assert.ok(top.a[0].delta < mid.a[0].delta * 0.5, `zirve ${top.a[0].delta} / orta ${mid.a[0].delta}`);
   assert.equal(top.b[0].delta, mid.b[0].delta);
-  assert.equal(elo.taper(2400), 1);
-  assert.ok(Math.abs(elo.taper(3000) - 0.3) < 1e-9);
+  assert.equal(elo.taper(2400, elo.V2), 1);
+  assert.ok(Math.abs(elo.taper(3000, elo.V2) - 0.3) < 1e-9);
 });
 
 test('geçiş anındaki puanlar korunur: v2 sadece sonraki maçları etkiler', () => {
@@ -176,4 +176,36 @@ test('geçiş anındaki puanlar korunur: v2 sadece sonraki maçları etkiler', (
   // eski maçların değişimleri birebir aynı
   assert.deepEqual(withNew.matches.slice(1).map((m) => m.a[0].delta), old.matches.map((m) => m.a[0].delta));
   assert.ok(Math.abs(withNew.matches[0].a[0].delta) > 0);
+});
+
+// ---------- v3 kuralları (V3_FROM sonrası, şu anki kurallar) ----------
+const T3 = elo.V3_FROM + DAY;
+const pl3 = (r, rd = 300) => ({ r, rd, last: T3 });
+
+test('v3: oturmuş eşit oyuncular arasında değişim ~±50, güçlü zayıfı yenince az alır', () => {
+  const even = elo.computeGame([pl3(1600)], [pl3(1600)], 'A', T3, 1600);
+  assert.ok(even.a[0].delta >= 45 && even.a[0].delta <= 55, `değişim ${even.a[0].delta}`);
+  const fav = elo.computeGame([pl3(2600)], [pl3(1200)], 'A', T3, 1600);
+  const upset = elo.computeGame([pl3(1200)], [pl3(2600)], 'A', T3, 1600);
+  assert.ok(fav.a[0].delta < 20 && upset.a[0].delta > 80, `favori ${fav.a[0].delta}, sürpriz ${upset.a[0].delta}`);
+});
+
+test('v3: kazanç 2800 üstünde azalır, 3300 ve üstünde %25', () => {
+  assert.equal(elo.taper(2800), 1);
+  assert.ok(Math.abs(elo.taper(3300) - 0.25) < 1e-9);
+  const mid = elo.computeGame([pl3(2000)], [pl3(2000)], 'A', T3, 1600);
+  const top = elo.computeGame([pl3(3200)], [pl3(3200)], 'A', T3, 1600);
+  assert.ok(top.a[0].delta < mid.a[0].delta * 0.5);
+  assert.equal(top.b[0].delta, mid.b[0].delta);
+});
+
+test('v3 geçişi: önceki dönemlerde oynanmış maçlar değişmez', () => {
+  const players = [P(1), P(2)];
+  const old = [
+    { id: 1, player_a: 1, player_b: 2, result: 'A', played_at: T + 1000 },
+    { id: 2, player_a: 2, player_b: 1, result: 'A', played_at: elo.V2_FROM + 1000 },
+  ];
+  const before = elo.replay(players, old, []);
+  const after = elo.replay(players, [...old, { id: 3, player_a: 1, player_b: 2, result: 'A', played_at: T3 }], []);
+  assert.deepEqual(after.matches.slice(1).map((m) => m.a[0].delta), before.matches.map((m) => m.a[0].delta));
 });

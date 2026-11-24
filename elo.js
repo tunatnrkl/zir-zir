@@ -11,11 +11,14 @@
  * 2v2 takım maçlarında beklenen sonuç iki takımın puan ortalamalarına göre
  * hesaplanır; her oyuncunun değişimi kendi RD'sine göre ölçeklenir.
  *
- * v2 kuralları (V2_FROM'dan sonraki maçlar; önceki puanlar aynen korunur):
- *  - Ölçek 2,5 kat geniş: oturmuş eşit maçta ≈ ±25, iyi oyuncu çok daha yükseğe çıkar.
- *  - Sıralamadaki oyuncuların ortalaması 1600'ün altındayken kazanana lig bonusu
- *    (açığın her 25 puanına +1, en fazla +15); ortalama 1600'e yaklaştıkça biter.
- *  - 2400'den sonra kazanılan puan azalır, 3000'de %30'a iner: zirvede tutunmak zor.
+ * Kural dönemleri (her maç, oynandığı andaki kurallarla hesaplanır; eski puanlar korunur):
+ *  - v1 (başlangıç): klasik ölçek, oturmuş eşit maç ≈ ±10.
+ *  - v2 (24.11.2026 20:09 UTC): 2,5 kat geniş ölçek, lig bonusu, 2400 üstünde zorlaşma.
+ *  - v3 (24.11.2026 20:18 UTC, şu anki): 5 kat geniş ölçek, oturmuş eşit maç ≈ ±50.
+ *    · Sıralamadaki oyuncuların ortalaması 1600'ün altındayken kazanana lig bonusu
+ *      (açığın her 12,5 puanına +1, en fazla +30); ortalama 1600'e gelince biter.
+ *    · 2800'den sonra kazanılan puan azalır, 3300'de %25'e iner (kayıp azalmaz):
+ *      en iyiler 2800-3000'e çıkar, 3000 üstünde tutunmak çok zordur.
  *
  * Puanlar saklanmaz: oyuncu katılımları, maçlar ve manuel düzeltmeler zaman
  * sırasıyla baştan oynatılır. Bir maç düzeltilince/silinince her şey tutarlı kalır.
@@ -28,26 +31,35 @@
   const DAY = 86400000;
 
   /*
-   * Kural sürümleri. Bu tarihten önceki maçlar v1 ile, sonrakiler v2 ile
-   * hesaplanır; böylece geçiş anındaki puanlar olduğu gibi korunur.
-   * (2026-11-24 20:09 UTC)
+   * Kural dönemleri. Her maç, oynandığı andaki dönemin kurallarıyla hesaplanır;
+   * böylece kurallar değiştiğinde o ana kadarki puanlar olduğu gibi korunur.
+   * Dönem geçişinde belirsizlikler (RD) yeni ölçeğe oranlanır, puanlar aynı kalır.
    */
-  const V2_FROM = 1795550940000;
+  const V2_FROM = 1795550940000; // 2026-11-24 20:09 UTC
+  const V3_FROM = 1795551480000; // 2026-11-24 20:18 UTC
 
   // v1: klasik Glicko ölçeği (oturmuş eşit maç ≈ ±10).
-  const V1 = { scale: 400, startRd: 200, minRd: 50, maxRd: 350, growth: 10 };
-  // v2: aynı Glicko, 2,5 kat geniş ölçek (oturmuş eşit maç ≈ ±25, puanlar daha açılır).
-  const V2 = { scale: 1000, startRd: 500, minRd: 150, maxRd: 875, growth: 25 };
+  const V1 = { from: -Infinity, scale: 400, startRd: 200, minRd: 50, maxRd: 350, growth: 10, league: null };
+  // v2: 2,5 kat geniş ölçek + lig bonusu + 2400 üstünde zorlaşma.
+  const V2 = {
+    from: V2_FROM, scale: 1000, startRd: 500, minRd: 150, maxRd: 875, growth: 25,
+    league: { target: 1600, per: 25, max: 15, taperFrom: 2400, taperTo: 3000, taperMin: 0.3 },
+  };
+  // v3: 5 kat geniş ölçek; en iyiler 2800-3000'e çıkabilir, 3000 üstü çok zor.
+  const V3 = {
+    from: V3_FROM, scale: 2000, startRd: 500, minRd: 300, maxRd: 1750, growth: 50,
+    league: { target: 1600, per: 12.5, max: 30, taperFrom: 2800, taperTo: 3300, taperMin: 0.25 },
+  };
+  const ERAS = [V1, V2, V3];
 
-  // v2 lig ayarları
-  const TARGET_AVERAGE = 1600; // ortalama bu değerin altındayken kazanana bonus
-  const BONUS_PER = 25; // açığın her 25 puanı için +1 bonus
-  const BONUS_MAX = 15;
-  const TAPER_FROM = 2400; // bu puandan sonra kazanılan puan azalır…
-  const TAPER_TO = 3000; // …burada en düşük orana iner
-  const TAPER_MIN = 0.3;
+  const TARGET_AVERAGE = 1600;
+  const CURRENT = ERAS[ERAS.length - 1];
 
-  const rulesAt = (t) => (t != null && t >= V2_FROM ? V2 : V1);
+  const rulesAt = (t) => {
+    let P = V1;
+    for (const e of ERAS) if (t != null && t >= e.from) P = e;
+    return P;
+  };
 
   const qOf = (P) => Math.LN10 / P.scale;
   const gOf = (P, rd) => {
@@ -56,7 +68,7 @@
   };
   const expectedOf = (P, r, rOpp, rdOpp) => 1 / (1 + Math.pow(10, (-gOf(P, rdOpp) * (r - rOpp)) / P.scale));
 
-  // Geriye dönük uyumluluk (testler ve önizleme v1 ölçeğini kullanabilir)
+  // Geriye dönük uyumluluk (testler v1 ölçeğini kullanır)
   const g = (rd) => gOf(V1, rd);
   const expected = (r, rOpp, rdOpp) => expectedOf(V1, r, rOpp, rdOpp);
 
@@ -76,15 +88,19 @@
     return { change: (q / denom) * gj * (s - e), rd: Math.max(P.minRd, Math.sqrt(1 / denom)) };
   }
 
-  /** v2: ortalama hedefin altındaysa kazanana verilen lig bonusu. */
-  const leagueBonus = (average) =>
-    average == null ? 0 : Math.max(0, Math.min(BONUS_MAX, (TARGET_AVERAGE - average) / BONUS_PER));
+  /** Ortalama hedefin altındaysa kazanana verilen lig bonusu. */
+  const leagueBonus = (average, P = CURRENT) => {
+    const L = P.league;
+    if (!L || average == null) return 0;
+    return Math.max(0, Math.min(L.max, (L.target - average) / L.per));
+  };
 
-  /** v2: yüksek puanda kazanılan puanı azaltan çarpan (2400 → 1, 3000+ → 0,3). */
-  function taper(r) {
-    if (r <= TAPER_FROM) return 1;
-    const k = Math.min(1, (r - TAPER_FROM) / (TAPER_TO - TAPER_FROM));
-    return 1 - k * (1 - TAPER_MIN);
+  /** Yüksek puanda kazanılan puanı azaltan çarpan. */
+  function taper(r, P = CURRENT) {
+    const L = P.league;
+    if (!L || r <= L.taperFrom) return 1;
+    const k = Math.min(1, (r - L.taperFrom) / (L.taperTo - L.taperFrom));
+    return 1 - k * (1 - L.taperMin);
   }
 
   const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -101,18 +117,18 @@
    */
   function computeGame(teamA, teamB, result, t, average) {
     const P = rulesAt(t);
-    const v2 = P === V2;
+    const league = !!P.league;
     const rdA = teamA.map((p) => currentRd(p, t));
     const rdB = teamB.map((p) => currentRd(p, t));
     const avgA = avg(teamA.map((p) => p.r));
     const avgB = avg(teamB.map((p) => p.r));
     const sA = result === 'A' ? 1 : 0;
-    const bonus = v2 ? leagueBonus(average) : 0;
+    const bonus = league ? leagueBonus(average, P) : 0;
     const side = (team, rds, ownAvg, oppAvg, oppRd, s) =>
       team.map((p, i) => {
         const n = step(P, p.r, rds[i], oppAvg, oppRd, s, ownAvg);
         let change = n.change;
-        if (v2 && s === 1) change = (change + bonus) * taper(p.r); // kazanç: bonus + yüksekte zorlaşma
+        if (league && s === 1) change = (change + bonus) * taper(p.r, P); // kazanç: bonus + yüksekte zorlaşma
         const r = Math.max(RATING_FLOOR, p.r + change);
         return { r, rd: n.rd, delta: Math.round(r) - Math.round(p.r) };
       });
@@ -142,17 +158,18 @@
       s.peak = Math.max(s.peak, s.rating);
     };
 
-    // v2'ye geçişte mevcut belirsizlikler yeni ölçeğe taşınır (puanlar aynen kalır).
-    let converted = false;
+    // Dönem geçişinde mevcut belirsizlikler yeni ölçeğe taşınır (puanlar aynen kalır).
+    let era = V1;
     const rankedAverage = () => {
       const played = [...stats.values()].filter((s) => s.games > 0);
       return played.length ? played.reduce((a, s) => a + s.r, 0) / played.length : null;
     };
 
     for (const ev of events) {
-      if (!converted && ev.t >= V2_FROM) {
-        converted = true;
-        for (const s of stats.values()) s.rd = Math.min(V2.maxRd, s.rd * (V2.scale / V1.scale));
+      const next = rulesAt(ev.t);
+      if (next !== era) {
+        for (const s of stats.values()) s.rd = Math.min(next.maxRd, s.rd * (next.scale / era.scale));
+        era = next;
       }
       if (ev.kind === 'join') {
         const p = ev.p;
@@ -246,7 +263,7 @@
   }
 
   const api = {
-    START_RATING, RATING_FLOOR, TARGET_AVERAGE, V2_FROM, V1, V2,
+    START_RATING, RATING_FLOOR, TARGET_AVERAGE, V2_FROM, V3_FROM, V1, V2, V3, ERAS, rulesAt,
     g, expected, currentRd, leagueBonus, taper, computeGame, replay,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
