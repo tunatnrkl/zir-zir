@@ -54,9 +54,8 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 24px; }
 .table td { padding: 12px 10px; background: var(--panel2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; }
 .table td:first-child { border-left: 1px solid var(--line); border-radius: 12px 0 0 12px; }
 .table td:last-child { border-right: 1px solid var(--line); border-radius: 0 12px 12px 0; }
-.table tbody tr { cursor: pointer; animation: rowIn .35s ease both; }
+.table tbody tr { animation: rowIn .35s ease both; }
 .table tbody tr:hover td { background: #1c222a; }
-.table tbody tr:active td { background: var(--neon-dim); }
 @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } }
 .c { text-align: center !important; } .r { text-align: right !important; }
 .rank { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; font: 800 16px/1 var(--head); background: var(--bg); }
@@ -177,3 +176,9 @@ input:focus, select:focus { border-color: var(--neon); }
 .table tr.unranked td:first-child { border-left-style: dashed; }
 .table tr.unranked td:last-child { border-right-style: dashed; }
 .table tr.unranked .name { color: var(--muted); font-weight: 600; }
+
+/* Ana ekran: galibiyet serisi ve son maçtaki değişim */
+.streak { margin-left: 6px; font: 700 13px/1 var(--head); color: #ffb347; white-space: nowrap; vertical-align: middle; }
+.last { display: block; margin-top: 3px; font: 700 12px/1 var(--head); color: var(--muted); }
+.last.up { color: var(--win); }
+.last.down { color: var(--loss); }

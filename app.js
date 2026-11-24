@@ -94,8 +94,12 @@
         </tr>`
           : `<tr class="${p.rank <= 3 ? `top${p.rank}` : ''}" data-player="${p.id}">
           <td class="c"><span class="rank">${p.rank}</span></td>
-          <td><span class="name">${esc(p.name)}</span></td>
-          <td class="r"><span class="elo">${p.rating}</span></td>
+          <td><span class="name">${esc(p.name)}</span>${p.streak >= 3 ? `<span class="streak" title="Üst üste ${p.streak} galibiyet">🔥${p.streak}</span>` : ''}</td>
+          <td class="r"><span class="elo">${p.rating}</span>${
+            p.lastDelta != null
+              ? `<span class="last ${p.lastDelta > 0 ? 'up' : p.lastDelta < 0 ? 'down' : ''}" title="Son maçtaki değişim">${signed(p.lastDelta)}</span>`
+              : ''
+          }</td>
           <td class="c w">${p.wins}</td>
           <td class="c l">${p.losses}</td>
           <td class="r">${Math.round(p.winRate)}</td>
@@ -103,11 +107,6 @@
       )
       .join('');
   }
-
-  $('#leaderboard').addEventListener('click', (e) => {
-    const tr = e.target.closest('tr[data-player]');
-    if (tr) openMatch(Number(tr.dataset.player));
-  });
 
   // ---------- pencere ----------
   const modal = $('#modal');
@@ -264,7 +263,11 @@
       <button class="btn btn-ghost" id="open-team">2v2 maç ekle</button>
 
       <h3>Kafa Kafaya (1v1)</h3>
+      <select id="h2h-player" aria-label="Oyuncu seç"></select>
       <ul class="list" id="h2h"></ul>
+
+      <h3>Rekorlar</h3>
+      <ul class="list" id="records"></ul>
 
       <h3>Maç Geçmişi</h3>
       <select id="hist-filter" aria-label="Oyuncuya göre filtrele"></select>
@@ -331,33 +334,64 @@
         : '<li class="empty">Henüz maç yok.</li>';
     }
 
-    const h2h = $('#h2h');
-    if (h2h) {
-      // Her oyuncu çifti için tekli maçlardaki galibiyetler
-      const pairs = new Map();
-      for (const m of S.matches) {
-        if (m.team || m.a.length !== 1 || m.b.length !== 1) continue;
-        const [pa, pb] = [m.a[0], m.b[0]];
-        const key = [pa.id, pb.id].sort((x, y) => x - y).join('-');
-        if (!pairs.has(key)) pairs.set(key, { p: [pa, pb], wins: new Map([[pa.id, 0], [pb.id, 0]]), total: 0 });
-        const rec = pairs.get(key);
-        rec.total++;
-        const winner = m.result === 'A' ? pa.id : pb.id;
-        rec.wins.set(winner, rec.wins.get(winner) + 1);
+    const hs = $('#h2h-player');
+    if (hs) {
+      // Seçilen oyuncunun her rakibe karşı tekli maç sonuçları
+      const cur = Number(hs.value) || null;
+      hs.innerHTML =
+        '<option value="">Oyuncu seç</option>' +
+        sorted.map((p) => `<option value="${p.id}" ${p.id === cur ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+      const me = cur && S.byId.get(cur) ? cur : null;
+      let html = '<li class="empty">Bir oyuncu seç, kime karşı kaç kere kazanıp kaybettiğini gör.</li>';
+      if (me) {
+        const vs = new Map(); // rakip id → { name, w, l }
+        for (const m of S.matches) {
+          if (m.team || m.a.length !== 1 || m.b.length !== 1) continue;
+          const [pa, pb] = [m.a[0], m.b[0]];
+          if (pa.id !== me && pb.id !== me) continue;
+          const opp = pa.id === me ? pb : pa;
+          const won = (m.result === 'A' ? pa.id : pb.id) === me;
+          if (!vs.has(opp.id)) vs.set(opp.id, { name: S.byId.get(opp.id)?.name ?? opp.name, w: 0, l: 0 });
+          const r = vs.get(opp.id);
+          if (won) r.w++;
+          else r.l++;
+        }
+        const rows = [...vs.values()].sort((x, y) => y.w + y.l - (x.w + x.l) || x.name.localeCompare(y.name, 'tr'));
+        html = rows.length
+          ? rows
+              .map((r) => {
+                const tone = r.w > r.l ? 'd-up' : r.w < r.l ? 'd-down' : 'muted';
+                return `<li><span class="grow">vs <b>${esc(r.name)}</b></span><span class="${tone}"><b>${r.w}</b> G – <b>${r.l}</b> M</span><span class="when">${r.w + r.l} maç</span></li>`;
+              })
+              .join('')
+          : '<li class="empty">Bu oyuncunun henüz tekli maçı yok.</li>';
       }
-      const rows = [...pairs.values()].sort((x, y) => y.total - x.total);
-      h2h.innerHTML = rows.length
-        ? rows
-            .map((r) => {
-              const [x, y] = r.p;
-              const wx = r.wins.get(x.id);
-              const wy = r.wins.get(y.id);
-              const lead = wx === wy ? '' : wx > wy ? 'd-up' : 'd-down';
-              const cls = (n) => (n === 0 ? 'muted' : lead);
-              return `<li><span class="grow"><b>${esc(x.name)}</b> <span class="${cls(wx)}">${wx}</span> – <span class="${cls(wy)}">${wy}</span> <b>${esc(y.name)}</b></span><span class="when">${r.total} maç</span></li>`;
-            })
+      $('#h2h').innerHTML = html;
+    }
+
+    const rec = $('#records');
+    if (rec) {
+      // Sadece maç yapmış oyuncular; eşitlik varsa hepsi yazılır
+      const played = S.players.filter((p) => p.games > 0);
+      const best = (key) => {
+        const max = Math.max(...played.map((p) => p[key]));
+        return { value: max, names: played.filter((p) => p[key] === max).map((p) => p.name) };
+      };
+      const items = [];
+      if (played.length) {
+        const peak = best('peak');
+        items.push(['En yüksek ELO', `${peak.value}`, peak.names]);
+        const streak = best('bestStreak');
+        if (streak.value > 0) items.push(['En uzun galibiyet serisi', `${streak.value} maç`, streak.names]);
+      }
+      rec.innerHTML = items.length
+        ? items
+            .map(
+              ([label, value, names]) =>
+                `<li><span class="grow">${label}<br><b>${esc(names.join(', '))}</b></span><span class="elo">${value}</span></li>`
+            )
             .join('')
-        : '<li class="empty">Henüz tekli maç yok.</li>';
+        : '<li class="empty">Henüz rekor yok.</li>';
     }
 
     const adj = $('#adj-player');
@@ -505,7 +539,7 @@
   });
 
   modal.addEventListener('change', (e) => {
-    if (e.target.id === 'hist-filter') refreshSettings();
+    if (e.target.id === 'hist-filter' || e.target.id === 'h2h-player') refreshSettings();
   });
 
   // ---------- pencere içi formlar ----------

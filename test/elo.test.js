@@ -127,3 +127,15 @@ test('hiç maç yapmayanlar sıralamaya girmez, listenin sonunda durur', () => {
   assert.deepEqual(s.players.map((p) => p.id), [3, 2, 1, 4]);
   assert.deepEqual(s.players.map((p) => p.rank), [1, 2, null, null]);
 });
+
+test('galibiyet serisi, en uzun seri ve son maç değişimi tutulur', () => {
+  const ms = ['A', 'A', 'A', 'B', 'A'].map((r, i) => ({ id: i + 1, player_a: 1, player_b: 2, result: r, played_at: T + (i + 1) * 1000 }));
+  const s = elo.replay([P(1), P(2)], ms, []);
+  const a = s.players.find((p) => p.id === 1);
+  const b = s.players.find((p) => p.id === 2);
+  assert.equal(a.streak, 1);
+  assert.equal(a.bestStreak, 3);
+  assert.equal(b.bestStreak, 1);
+  assert.equal(a.lastDelta, s.matches[0].a[0].delta);
+  assert.ok(a.lastDelta > 0 && b.lastDelta < 0);
+});

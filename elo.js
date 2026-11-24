@@ -118,6 +118,9 @@
           losses: 0,
           draws: 0,
           form: [],
+          streak: 0, // şu anki üst üste galibiyet sayısı
+          bestStreak: 0, // en uzun galibiyet serisi
+          lastDelta: null, // son maçtaki puan değişimi
         });
       } else if (ev.kind === 'adjust') {
         const a = ev.a;
@@ -148,6 +151,9 @@
             else s.losses++;
             s.form.push(won ? 'W' : 'L');
             if (s.form.length > 5) s.form.shift();
+            s.streak = won ? s.streak + 1 : 0;
+            s.bestStreak = Math.max(s.bestStreak, s.streak);
+            s.lastDelta = out[i].delta;
           });
         apply(A, res.a, m.result === 'A');
         apply(B, res.b, m.result === 'B');
