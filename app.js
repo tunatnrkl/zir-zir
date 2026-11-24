@@ -155,7 +155,10 @@
     `<button class="chip ${cls}" data-pick="${p.id}"><b>${esc(p.name)}</b><span>${p.rating}</span></button>`;
 
   function winnerScreen(sideA, sideB) {
-    const res = (r) => Elo.computeGame(sideA, sideB, r, Date.now());
+    // Önizleme, kayıttakiyle aynı kuralları kullanır (sıralamadaki oyuncuların ortalaması → lig bonusu)
+    const played = S.players.filter((p) => p.games > 0);
+    const average = played.length ? played.reduce((a, p) => a + p.r, 0) / played.length : null;
+    const res = (r) => Elo.computeGame(sideA, sideB, r, Date.now(), average);
     const ra = res('A');
     const rb = res('B');
     const label = (side, out) =>

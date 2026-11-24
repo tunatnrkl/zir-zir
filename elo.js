@@ -11,6 +11,12 @@
  * 2v2 takım maçlarında beklenen sonuç iki takımın puan ortalamalarına göre
  * hesaplanır; her oyuncunun değişimi kendi RD'sine göre ölçeklenir.
  *
+ * v2 kuralları (V2_FROM'dan sonraki maçlar; önceki puanlar aynen korunur):
+ *  - Ölçek 2,5 kat geniş: oturmuş eşit maçta ≈ ±25, iyi oyuncu çok daha yükseğe çıkar.
+ *  - Sıralamadaki oyuncuların ortalaması 1600'ün altındayken kazanana lig bonusu
+ *    (açığın her 25 puanına +1, en fazla +15); ortalama 1600'e yaklaştıkça biter.
+ *  - 2400'den sonra kazanılan puan azalır, 3000'de %30'a iner: zirvede tutunmak zor.
+ *
  * Puanlar saklanmaz: oyuncu katılımları, maçlar ve manuel düzeltmeler zaman
  * sırasıyla baştan oynatılır. Bir maç düzeltilince/silinince her şey tutarlı kalır.
  */
@@ -18,39 +24,67 @@
   'use strict';
 
   const START_RATING = 1000;
-  const START_RD = 200; // yeni oyuncunun belirsizliği
-  const MIN_RD = 50; // en oturmuş hal
-  const MAX_RD = 350;
-  const RD_GROWTH_PER_DAY = 10; // oynamayınca RD'nin günlük artışı (≈1 yıl ara → neredeyse yeni oyuncu)
   const RATING_FLOOR = 100;
   const DAY = 86400000;
-  const Q = Math.LN10 / 400;
 
-  const g = (rd) => 1 / Math.sqrt(1 + (3 * Q * Q * rd * rd) / (Math.PI * Math.PI));
-  const expected = (r, rOpp, rdOpp) => 1 / (1 + Math.pow(10, (-g(rdOpp) * (r - rOpp)) / 400));
+  /*
+   * Kural sürümleri. Bu tarihten önceki maçlar v1 ile, sonrakiler v2 ile
+   * hesaplanır; böylece geçiş anındaki puanlar olduğu gibi korunur.
+   * (2026-11-24 20:09 UTC)
+   */
+  const V2_FROM = 1795550940000;
+
+  // v1: klasik Glicko ölçeği (oturmuş eşit maç ≈ ±10).
+  const V1 = { scale: 400, startRd: 200, minRd: 50, maxRd: 350, growth: 10 };
+  // v2: aynı Glicko, 2,5 kat geniş ölçek (oturmuş eşit maç ≈ ±25, puanlar daha açılır).
+  const V2 = { scale: 1000, startRd: 500, minRd: 150, maxRd: 875, growth: 25 };
+
+  // v2 lig ayarları
+  const TARGET_AVERAGE = 1600; // ortalama bu değerin altındayken kazanana bonus
+  const BONUS_PER = 25; // açığın her 25 puanı için +1 bonus
+  const BONUS_MAX = 15;
+  const TAPER_FROM = 2400; // bu puandan sonra kazanılan puan azalır…
+  const TAPER_TO = 3000; // …burada en düşük orana iner
+  const TAPER_MIN = 0.3;
+
+  const rulesAt = (t) => (t != null && t >= V2_FROM ? V2 : V1);
+
+  const qOf = (P) => Math.LN10 / P.scale;
+  const gOf = (P, rd) => {
+    const q = qOf(P);
+    return 1 / Math.sqrt(1 + (3 * q * q * rd * rd) / (Math.PI * Math.PI));
+  };
+  const expectedOf = (P, r, rOpp, rdOpp) => 1 / (1 + Math.pow(10, (-gOf(P, rdOpp) * (r - rOpp)) / P.scale));
+
+  // Geriye dönük uyumluluk (testler ve önizleme v1 ölçeğini kullanabilir)
+  const g = (rd) => gOf(V1, rd);
+  const expected = (r, rOpp, rdOpp) => expectedOf(V1, r, rOpp, rdOpp);
 
   /** Maç anındaki RD (oynamadığı süre kadar artmış hali). */
   function currentRd(p, t) {
+    const P = rulesAt(t);
     const days = p.last != null && t != null ? Math.max(0, (t - p.last) / DAY) : 0;
-    return Math.min(MAX_RD, Math.sqrt(p.rd * p.rd + RD_GROWTH_PER_DAY * RD_GROWTH_PER_DAY * days));
+    return Math.min(P.maxRd, Math.sqrt(p.rd * p.rd + P.growth * P.growth * days));
   }
 
-  /**
-   * Tek oyuncunun Glicko güncellemesi.
-   * @param r   oyuncunun puanı      @param rd  oyuncunun RD'si
-   * @param rOpp rakip puanı         @param rdOpp rakip RD'si
-   * @param s   1 kazandı, 0 kaybetti
-   * @param rForE beklenen sonuç için kullanılacak puan (takımda takım ortalaması)
-   */
-  function step(r, rd, rOpp, rdOpp, s, rForE = r) {
-    const gj = g(rdOpp);
-    const e = expected(rForE, rOpp, rdOpp);
-    const d2inv = Q * Q * gj * gj * e * (1 - e);
-    const denom = 1 / (rd * rd) + d2inv;
-    let newR = r + (Q / denom) * gj * (s - e);
-    newR = Math.max(RATING_FLOOR, newR);
-    const newRd = Math.max(MIN_RD, Math.sqrt(1 / denom));
-    return { r: newR, rd: newRd, e };
+  /** Tek oyuncunun Glicko güncellemesi (rForE: takımda takım ortalaması). */
+  function step(P, r, rd, rOpp, rdOpp, s, rForE = r) {
+    const q = qOf(P);
+    const gj = gOf(P, rdOpp);
+    const e = expectedOf(P, rForE, rOpp, rdOpp);
+    const denom = 1 / (rd * rd) + q * q * gj * gj * e * (1 - e);
+    return { change: (q / denom) * gj * (s - e), rd: Math.max(P.minRd, Math.sqrt(1 / denom)) };
+  }
+
+  /** v2: ortalama hedefin altındaysa kazanana verilen lig bonusu. */
+  const leagueBonus = (average) =>
+    average == null ? 0 : Math.max(0, Math.min(BONUS_MAX, (TARGET_AVERAGE - average) / BONUS_PER));
+
+  /** v2: yüksek puanda kazanılan puanı azaltan çarpan (2400 → 1, 3000+ → 0,3). */
+  function taper(r) {
+    if (r <= TAPER_FROM) return 1;
+    const k = Math.min(1, (r - TAPER_FROM) / (TAPER_TO - TAPER_FROM));
+    return 1 - k * (1 - TAPER_MIN);
   }
 
   const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -61,19 +95,26 @@
    * @param {Array<{r:number, rd:number, last:?number}>} teamA
    * @param {Array<{r:number, rd:number, last:?number}>} teamB
    * @param {'A'|'B'} result
-   * @param {number} t maç zamanı (ms)
+   * @param {number} t maç zamanı (ms) – hangi kuralların geçerli olduğunu belirler
+   * @param {number} [average] maç anında sıralamadaki oyuncuların ortalaması (v2 bonusu için)
    * @returns {{a: Array<{r,rd,delta}>, b: Array<{r,rd,delta}>}}
    */
-  function computeGame(teamA, teamB, result, t) {
+  function computeGame(teamA, teamB, result, t, average) {
+    const P = rulesAt(t);
+    const v2 = P === V2;
     const rdA = teamA.map((p) => currentRd(p, t));
     const rdB = teamB.map((p) => currentRd(p, t));
     const avgA = avg(teamA.map((p) => p.r));
     const avgB = avg(teamB.map((p) => p.r));
     const sA = result === 'A' ? 1 : 0;
+    const bonus = v2 ? leagueBonus(average) : 0;
     const side = (team, rds, ownAvg, oppAvg, oppRd, s) =>
       team.map((p, i) => {
-        const n = step(p.r, rds[i], oppAvg, oppRd, s, ownAvg);
-        return { r: n.r, rd: n.rd, delta: Math.round(n.r) - Math.round(p.r) };
+        const n = step(P, p.r, rds[i], oppAvg, oppRd, s, ownAvg);
+        let change = n.change;
+        if (v2 && s === 1) change = (change + bonus) * taper(p.r); // kazanç: bonus + yüksekte zorlaşma
+        const r = Math.max(RATING_FLOOR, p.r + change);
+        return { r, rd: n.rd, delta: Math.round(r) - Math.round(p.r) };
       });
     return {
       a: side(teamA, rdA, avgA, avgB, rms(rdB), sA),
@@ -101,7 +142,18 @@
       s.peak = Math.max(s.peak, s.rating);
     };
 
+    // v2'ye geçişte mevcut belirsizlikler yeni ölçeğe taşınır (puanlar aynen kalır).
+    let converted = false;
+    const rankedAverage = () => {
+      const played = [...stats.values()].filter((s) => s.games > 0);
+      return played.length ? played.reduce((a, s) => a + s.r, 0) / played.length : null;
+    };
+
     for (const ev of events) {
+      if (!converted && ev.t >= V2_FROM) {
+        converted = true;
+        for (const s of stats.values()) s.rd = Math.min(V2.maxRd, s.rd * (V2.scale / V1.scale));
+      }
       if (ev.kind === 'join') {
         const p = ev.p;
         stats.set(p.id, {
@@ -109,7 +161,7 @@
           name: p.name,
           created_at: p.created_at,
           r: START_RATING,
-          rd: START_RD,
+          rd: rulesAt(p.created_at).startRd,
           last: null,
           rating: START_RATING,
           peak: START_RATING,
@@ -139,7 +191,7 @@
         const A = idsA.map((id) => stats.get(id));
         const B = idsB.map((id) => stats.get(id));
         const before = [...A, ...B].map((s) => s.rating);
-        const res = computeGame(A, B, m.result, m.played_at);
+        const res = computeGame(A, B, m.result, m.played_at, rankedAverage());
 
         const apply = (team, out, won) =>
           team.forEach((s, i) => {
@@ -193,7 +245,10 @@
     };
   }
 
-  const api = { START_RATING, START_RD, MIN_RD, RATING_FLOOR, g, expected, currentRd, computeGame, replay };
+  const api = {
+    START_RATING, RATING_FLOOR, TARGET_AVERAGE, V2_FROM, V1, V2,
+    g, expected, currentRd, leagueBonus, taper, computeGame, replay,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ZirElo = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
